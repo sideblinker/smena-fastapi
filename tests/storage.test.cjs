@@ -2,7 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const store = require('../dist/js/storage.js');
+require('../public/js/storage.js');
+const store = global.ShiftStore;
 const minute = 60 * 1000;
 const hour = 60 * minute;
 const start = Date.parse('2026-10-15T09:00:00+05:00');
