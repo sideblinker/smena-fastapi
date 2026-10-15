@@ -194,6 +194,12 @@ dialog::backdrop { background: #03050ac9; backdrop-filter: blur(9px); }
 .auth-story { --spot-x: 72%; --spot-y: 66%; min-height: 100svh; border: 0; border-right: 1px solid #ffffff17; border-radius: 0; padding: 44px 52px 29px; background: radial-gradient(ellipse at 65% 112%,#1753cbb8,transparent 59%),#080b12; color: #f1f0ea; isolation: isolate; position: relative; overflow: hidden; }
 .auth-story::before { content: ''; position: absolute; z-index: -1; inset: 0; width: auto; height: auto; border: 0; border-radius: 0; box-shadow: none; background: repeating-linear-gradient(90deg,transparent 0,transparent 47px,#93b4ff10 48px,#03061166 50px,#a8c5ff08 59px,transparent 70px); mask-image: linear-gradient(transparent 10%,#000 100%); pointer-events: none; }
 .auth-story::after { content: ''; position: absolute; z-index: -1; inset: 0; pointer-events: none; background: radial-gradient(ellipse 440px 390px at var(--spot-x) var(--spot-y),#316dff3d,transparent 78%); }
+/* Независимые световые полосы: движение только через transform и opacity. */
+.bands-ready::before { display: none; }
+.light-bands { position: absolute; z-index: -1; inset: 0 0 -40px; display: grid; grid-template-columns: repeat(12,minmax(0,1fr)); align-items: end; gap: 2px; overflow: hidden; pointer-events: none; mask-image: linear-gradient(180deg,transparent,#000 35%); }
+.light-bands > i { display: block; height: 110%; min-width: 0; border-left: 1px solid #6da3ff7a; background: linear-gradient(90deg,#71a4ff38,#3977ff14 18%,#163f9b03 74%,#03091688),linear-gradient(180deg,transparent 4%,#1c4bb640 33%,#2e71efb3 70%,#3977ff); opacity: var(--band-opacity,var(--band-rest-opacity,.3)); transform: translate3d(var(--band-drift,0px),var(--band-rise,0px),0) scaleY(var(--band-scale,var(--band-rest-scale,.7))); transform-origin: center bottom; transition: transform 520ms cubic-bezier(.16,.8,.23,1),opacity 420ms ease; }
+.timer-card .light-bands { mask-image: linear-gradient(115deg,#0002,#000 80%); }
+.timer-card.bands-ready::after, .auth-story.bands-ready::after { opacity: .65; }
 .auth-story .brand { position: relative; z-index: 1; }.auth-story .brand-caption { display: none; }
 .auth-story-copy { margin: auto 0; padding: 70px 0 225px; max-width: 650px; }
 .auth-kicker { display: block; color: #a0b7de; font-size: 9px; letter-spacing: 2px; }
