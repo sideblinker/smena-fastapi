@@ -1,0 +1,131 @@
+/* Свет и движение: несколько выразительных деталей в привычном интерфейсе. */
+:root { --accent-blue: #477bea; --motion-ease: cubic-bezier(.22, .75, .25, 1); }
+
+/* Контрастные акценты сохраняют светлое рабочее пространство. */
+.sidebar {
+  background: radial-gradient(ellipse at 80% 100%, #18394a 0, transparent 60%), #14292b;
+  border-right: 1px solid #96c4ea12;
+}
+.nav-link { transition: background 180ms, color 180ms, box-shadow 180ms; }
+.nav-link.active { box-shadow: inset 2px 0 #9dbff0; background: #afc9ef0d; }
+.page-heading h1 { letter-spacing: -.055em; font-size: clamp(29px, 2.8vw, 40px); }
+.stat-value, .report-number { font-variant-numeric: tabular-nums; }
+.stat-card, .card, .team-stats > div {
+  transition: border-color 220ms, box-shadow 220ms, translate 220ms var(--motion-ease);
+}
+
+/* Два слоя света: неподвижные вертикальные линии и мягкое пятно курсора. */
+.auth-story, .timer-card {
+  --spot-x: 72%;
+  --spot-y: 34%;
+  background: radial-gradient(ellipse at 88% 100%, #153e79 0, transparent 64%), #101e31;
+  color: #f3f3ec;
+}
+.auth-story::before, .timer-card::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 10% 0 0;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: repeating-linear-gradient(90deg, #8db4ff0a 0, #8db4ff00 51px, #020b1c30 52px, #93bcff16 53px);
+  mask-image: linear-gradient(transparent 5%, #000 100%);
+  pointer-events: none;
+}
+.auth-story::after, .timer-card::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  background: radial-gradient(ellipse 310px 290px at var(--spot-x) var(--spot-y), #4b85ff30 0, #2864d610 42%, transparent 75%);
+  pointer-events: none;
+}
+.auth-story .brand-caption { color: #a3b2c6; }
+.auth-kicker { color: #bacbdf; }
+.auth-story h1 { font-size: clamp(32px, 3.9vw, 58px); line-height: 1.12; letter-spacing: -.055em; font-weight: 550; }
+.auth-story h1 span { color: #b8c7da; }
+.auth-story-copy > p { color: #b1bfd0; }
+.auth-story-footer { color: #9aabc4; }
+.auth-preview {
+  border-color: #a1c4ff26;
+  background: linear-gradient(125deg, #e3eeff0c, #ffffff02);
+  box-shadow: 0 20px 45px #020c2329;
+}
+.auth-preview > div:first-child { color: #becddd; }
+.auth-preview > small { color: #a4b6cc; }
+.preview-bars i { background: #a0baff27; }
+.preview-bars i:nth-child(4) { background: #d3f1a7; box-shadow: 0 0 21px #d3f1a714; }
+.auth-preview > strong { letter-spacing: -.055em; }
+.auth-card h2 { letter-spacing: -.045em; }
+.auth-lock { box-shadow: 0 0 0 8px #d9e5f129; }
+
+.timer-card { box-shadow: 0 14px 34px #203c6016; }
+.timer-card::before { inset: 0 0 0 38%; opacity: .7; }
+.timer-card::after { background: radial-gradient(ellipse 230px 210px at var(--spot-x) var(--spot-y), #4c8aff27 0, transparent 80%); }
+.timer-top .timer-label, .timer-subtitle { color: #b5c3d5; }
+.timer-card .status-badge.idle { color: #c0ccdc; border-color: #bbceec30; background: #bbceec08; }
+.timer-digits { letter-spacing: -.045em; font-weight: 450; text-shadow: 0 0 26px #b7d3ff16; }
+.progress-labels { color: #aabbd0; }
+.progress-labels span:last-child { color: #c1d0df; }
+.progress-fill { background: linear-gradient(90deg, #8caaf1, #d3f1a7); }
+.timer-card .button.ghost { border-color: #bbceec40; color: #d7e3f1; }
+
+/* Анимации не меняют размер кнопок или их подписи. */
+.button { transition: background 180ms, border-color 180ms, box-shadow 180ms, transform 180ms; }
+.button svg, .text-button svg, .profile-button > svg:last-child { transition: transform 220ms var(--motion-ease); }
+.button.dark { background: #284354; border-color: #284354; }
+.button.dark:hover:not(:disabled) { background: #233e58; border-color: #4874a3; box-shadow: 0 5px 15px #31537714; }
+.button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+.button:focus-visible, .text-button:focus-visible, .nav-link:focus-visible { outline: 3px solid #7799c9; outline-offset: 3px; }
+.auth-submit { border-radius: 12px; }
+.auth-submit:hover:not(:disabled) svg, .text-button:hover svg, .profile-button:hover > svg:last-child { transform: translateX(4px); }
+.auth-card input:focus-visible { outline-color: #7799c9; }
+
+/* Короткое появление карточек при открытии раздела, без заставок и задержек. */
+@keyframes smena-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.section-view { animation: none; }
+.section-view:not([hidden]) > .page-heading,
+.section-view:not([hidden]) > .card,
+.section-view:not([hidden]) > .stats-grid > .stat-card,
+.section-view:not([hidden]) > .dashboard-grid > article,
+.section-view:not([hidden]) > .bottom-grid > article,
+.section-view:not([hidden]) > .report-grid > article {
+  animation: smena-rise 340ms var(--motion-ease) backwards;
+}
+.section-view:not([hidden]) > .stats-grid > :nth-child(2) { animation-delay: 35ms; }
+.section-view:not([hidden]) > .stats-grid > :nth-child(3) { animation-delay: 70ms; }
+.section-view:not([hidden]) > .stats-grid > :nth-child(4) { animation-delay: 105ms; }
+.section-view:not([hidden]) > .dashboard-grid > article { animation-delay: 70ms; }
+.section-view:not([hidden]) > .bottom-grid > article { animation-delay: 105ms; }
+dialog[open] { animation: smena-rise 180ms var(--motion-ease); }
+dialog::backdrop { background: #10233666; backdrop-filter: blur(4px); }
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .stat-card:hover { translate: 0 -3px; border-color: #91acd09c; box-shadow: 0 10px 25px #315a8d0c; }
+  .card:hover, .team-stats > div:hover { border-color: #a9bccb; }
+  .timer-actions .button:not(:disabled):hover svg { transform: translateX(2px); }
+  .auth-preview { transition: transform 400ms var(--motion-ease), border-color 220ms; }
+  .auth-preview:hover { transform: rotate(0); border-color: #b5ceff59; }
+}
+@media (max-width: 740px) {
+  .auth-story h1 { font-size: 32px; }
+  .auth-story::before { opacity: .55; }
+  .page-heading h1 { font-size: 29px; }
+  .nav-link.active { box-shadow: inset 0 -2px #9dbff0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .stat-card:hover { translate: none; }
+  .auth-submit:hover svg, .text-button:hover svg, .profile-button:hover > svg:last-child { transform: none; }
+}
