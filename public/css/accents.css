@@ -287,3 +287,50 @@ body.view-transition .view-sweep > i:nth-child(2) { animation-delay: 7ms; }body.
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }.view-sweep { display: none !important; }.roll-line { transform: none !important; }.roll-clone { display: none; }.kinetic-word > span { font-variation-settings: 'wght' 450; }
 }
 @media (hover:none), (pointer:coarse) { .roll-line { transform: none; }.roll-clone { display: none; } }
+
+/* Единый световой фон остаётся за всеми разделами и не принимает события мыши. */
+body.ambient-ready { position: relative; isolation: isolate; }
+.ambient-background {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden; isolation: isolate;
+  pointer-events: none; user-select: none;
+  background: radial-gradient(ellipse at 82% 83%,#123b8066,transparent 67%),radial-gradient(ellipse at 13% 62%,#102d6052,transparent 62%),#08090c;
+}
+.ambient-background .light-bands {
+  z-index: 0; inset: -24% -2% -30%; grid-template-columns: repeat(18,minmax(0,1fr));
+  gap: 2px; pointer-events: none;
+  mask-image: linear-gradient(180deg,#0005,#000c 28%,#000 73%);
+}
+.ambient-background .light-bands > i {
+  height: 155%; border-left-color: #76a6ff70;
+  background: linear-gradient(90deg,#82adff42,#3977ff20 17%,#173c8d08 73%,#0309168a),linear-gradient(180deg,transparent 2%,#19469550 25%,#2863c9a8 61%,#3977ff);
+}
+.ambient-background::after {
+  content: ''; position: absolute; z-index: 1; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg,#08090c50,transparent 32%,#08090c22),radial-gradient(ellipse at 49% 28%,#08090c45,transparent 70%);
+}
+body.ambient-ready .auth-screen,
+body.ambient-ready .auth-story { background: transparent; }
+body.ambient-ready .auth-story::before,
+body.ambient-ready .auth-story::after,
+body.ambient-ready .timer-card::before,
+body.ambient-ready .timer-card::after { display: none; }
+body.ambient-ready .auth-panel { background: #080b12bd; }
+body.ambient-ready .card,
+body.ambient-ready .today-card,
+body.ambient-ready .report-card { background: #101116dc; border-color: #94b2ed26; }
+body.ambient-ready .timer-card { background: #0b1323d9; border-color: #89abed3b; }
+body.ambient-ready .stats-grid,
+body.ambient-ready .team-stats { background: #080d1852; }
+body.ambient-ready .team-context { background: linear-gradient(90deg,transparent,#080b124d,transparent); }
+@media (max-width:650px) {
+  .ambient-background .light-bands { inset-inline: -12%; gap: 1px; }
+  .ambient-background::after { background: linear-gradient(180deg,#08090c55,#08090c15 38%,#08090c45); }
+  body.ambient-ready .auth-panel { background: #080b12c9; }
+  body.ambient-ready .card { background: #101116e3; }
+}
+@media (prefers-reduced-motion:reduce), (hover:none), (pointer:coarse) {
+  .ambient-background .light-bands > i {
+    transition: none; transform: translate3d(0,0,0) scaleY(var(--band-rest-scale,.7));
+    opacity: var(--band-rest-opacity,.3);
+  }
+}
