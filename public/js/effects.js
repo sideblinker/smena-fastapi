@@ -48,19 +48,15 @@
       observeRoots();
     }
 
-    // Общий фон закреплён за окном: один набор полос для всех разделов и входа.
-    const background = document.createElement('div');
-    background.className = 'ambient-background';
-    background.setAttribute('aria-hidden', 'true');
-    background.setAttribute('inert', '');
-    const bandCards = [background];
+    // Отдельные полосы двигаются независимо; слой никогда не перехватывает нажатия.
+    const bandCards = [...document.querySelectorAll('.auth-story, .timer-card')];
     const bandsByCard = new Map();
     bandCards.forEach(card => {
       const layer = document.createElement('div');
       layer.className = 'light-bands';
       layer.setAttribute('aria-hidden', 'true');
       layer.setAttribute('inert', '');
-      const bandCount = 18;
+      const bandCount = 12;
       const bands = Array.from({ length: bandCount }, (_, index) => {
         const band = document.createElement('i');
         band.style.setProperty('--band-rest-scale', (.66 + Math.sin(index * .63 + .4) * .15).toFixed(3));
@@ -72,8 +68,6 @@
       card.classList.add('bands-ready');
       bandsByCard.set(card, bands);
     });
-    document.body.prepend(background);
-    document.body.classList.add('ambient-ready');
 
     // На старых браузерах и сенсорных устройствах сохраняется обычная статичная страница.
     if (!window.matchMedia || !window.requestAnimationFrame || !('PointerEvent' in window)) return;

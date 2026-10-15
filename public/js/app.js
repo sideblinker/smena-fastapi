@@ -90,6 +90,8 @@
     return data;
   }
   function showAuth() {
+    $$('dialog[open]').forEach(dialog => dialog.close());
+    confirmCallback = null;
     $('#app').hidden = true; $('#auth-screen').hidden = false;
     const setup = session.setupRequired;
     $('#auth-eyebrow').textContent = setup ? 'ПЕРВЫЙ ЗАПУСК' : 'ВАШ ЛИЧНЫЙ КАБИНЕТ';
@@ -192,14 +194,20 @@
   }
   function renderTimeline() {
     const current = now(), today = dayStart(current), events = [];
-    const add = (time, title, description, symbol) => { if (time != null && time >= today && time <= current) events.push({ time, title, description, symbol }); };
     dashboard.shifts.forEach(shift => {
+      const add = (time, title, description, symbol) => { if (time != null && time >= today && time <= current) events.push({ time, title, description, symbol, shift }); };
       add(shift.startedAt, 'Начало работы', 'Хорошего рабочего дня!', 'play');
       shift.breaks.forEach(pause => { add(pause.startedAt, 'Начало перерыва', 'Немного времени для себя', 'coffee'); if (pause.endedAt !== shift.endedAt) add(pause.endedAt, 'Снова за работу', 'Перерыв завершён', 'play'); });
       add(shift.endedAt, 'Смена завершена', 'Время сохранено в базе', 'check');
     });
     events.sort((a, b) => b.time - a.time);
-    $('#timeline').innerHTML = events.length ? events.slice(0, 5).map(event => `<div class="timeline-item"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span></div><time class="timeline-time">${timeFormatter.format(event.time)}</time></div>`).join('') : '<div class="timeline-empty"><span class="empty-icon">' + icon('sun') + '</span><strong>Новый день — чистый лист</strong><p>Начните смену, и здесь появятся<br>события рабочего дня.</p></div>';
+    const shownShifts = new Set();
+    $('#timeline').innerHTML = events.length ? events.slice(0, 5).map(event => {
+      const shiftId = String(event.shift.id), deletable = isAdmin() && !shownShifts.has(shiftId);
+      shownShifts.add(shiftId);
+      const remove = deletable ? `<button type="button" class="button small danger timeline-delete" data-action="delete-shift" data-id="${escapeHTML(shiftId)}" aria-label="Удалить смену от ${fullFormatter.format(event.shift.startedAt)}">Удалить смену</button>` : '';
+      return `<div class="timeline-item${deletable ? ' has-action' : ''}"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span>${remove}</div><time class="timeline-time">${timeFormatter.format(event.time)}</time></div>`;
+    }).join('') : '<div class="timeline-empty"><span class="empty-icon">' + icon('sun') + '</span><strong>Новый день — чистый лист</strong><p>Начните смену, и здесь появятся<br>события рабочего дня.</p></div>';
   }
   function renderWeek() {
     const current = now(), monday = weekStart(current);
@@ -406,7 +414,9 @@
         confirmAction('Завершить рабочий день?', `Отработано: ${readable(metrics(active).workMs)}. Открытый перерыв завершится вместе со сменой.`, 'Завершить смену', async () => { await api(`/api/shifts/${encodeURIComponent(active.id)}/finish`, { method: 'POST', body: {} }); await loadDashboard(); notify('Смена завершена и сохранена.'); });
       }
       if (action === 'confirm' && confirmCallback) {
-        try { const done = await mutate(confirmCallback); if (done) $('#confirm-dialog').close(); } catch (error) { $('#confirm-error').textContent = error.message; }
+        const submittedCallback = confirmCallback;
+        try { const done = await mutate(submittedCallback); if (done && confirmCallback === submittedCallback) { $('#confirm-dialog').close(); confirmCallback = null; } }
+        catch (error) { if (confirmCallback === submittedCallback) $('#confirm-error').textContent = error.message; }
       }
       if (action === 'reset-filters') { $('#history-from').value = ''; $('#history-to').value = ''; $('#history-status').value = 'all'; renderHistory(); }
       if (action === 'export-history') await exportReport(true);
@@ -430,7 +440,23 @@
       if (action === 'edit-shift') openShift(id);
       if (action === 'delete-shift') {
         const shift = dashboard.shifts.find(item => String(item.id) === String(id));
-        confirmAction('Удалить запись смены?', `Смена от ${fullFormatter.format(shift.startedAt)} будет удалена из учёта. Действие останется в журнале.`, 'Удалить смену', async () => { await api(`/api/shifts/${encodeURIComponent(id)}`, { method: 'DELETE', body: { version: shift.version } }); await loadDashboard(); notify('Смена удалена.'); }, true);
+        if (!shift) { await loadDashboard(); notify('Список смен обновился. Выберите смену заново.', true); return; }
+        confirmAction('Удалить смену целиком?', `${dashboard.user.name}: смена от ${fullFormatter.format(shift.startedAt)} будет удалена вместе со всеми перерывами. Её события исчезнут, рабочее время пересчитается. Действие останется в журнале.`, 'Удалить смену', async () => {
+          try { await api(`/api/shifts/${encodeURIComponent(id)}`, { method: 'DELETE', body: { version: shift.version } }); }
+          catch (error) {
+            if (![404, 409].includes(error.status)) throw error;
+            $('#confirm-dialog').close(); confirmCallback = null;
+            await loadDashboard().catch(() => {});
+            notify(error.status === 404 ? 'Эта смена уже удалена.' : 'Смена изменилась. Обновите данные и подтвердите удаление заново.', true);
+            return;
+          }
+          $('#confirm-dialog').close(); confirmCallback = null;
+          dashboard.shifts = dashboard.shifts.filter(item => String(item.id) !== String(id));
+          renderDashboard();
+          notify('Смена удалена.');
+          try { await loadDashboard(); }
+          catch { notify('Смена удалена, но не удалось обновить остальные данные. Проверьте соединение.', true); }
+        }, true);
       }
       if (action === 'add-break') addBreakRow();
       if (action === 'remove-break') button.closest('.break-row').remove();
