@@ -203,10 +203,10 @@
     events.sort((a, b) => b.time - a.time);
     const shownShifts = new Set();
     $('#timeline').innerHTML = events.length ? events.slice(0, 5).map(event => {
-      const shiftId = String(event.shift.id), deletable = isAdmin() && !shownShifts.has(shiftId);
+      const shiftId = String(event.shift.id), manageable = isAdmin() && !shownShifts.has(shiftId);
       shownShifts.add(shiftId);
-      const remove = deletable ? `<button type="button" class="button small danger timeline-delete" data-action="delete-shift" data-id="${escapeHTML(shiftId)}" aria-label="Удалить смену от ${fullFormatter.format(event.shift.startedAt)}">Удалить смену</button>` : '';
-      return `<div class="timeline-item${deletable ? ' has-action' : ''}"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span>${remove}</div><time class="timeline-time">${timeFormatter.format(event.time)}</time></div>`;
+      const actions = manageable ? `<div class="timeline-actions"><button type="button" class="button small" data-action="edit-shift" data-id="${escapeHTML(shiftId)}" aria-label="Изменить смену от ${fullFormatter.format(event.shift.startedAt)}">Изменить смену</button><button type="button" class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shiftId)}" aria-label="Удалить смену от ${fullFormatter.format(event.shift.startedAt)}">Удалить смену</button></div>` : '';
+      return `<div class="timeline-item${manageable ? ' has-action' : ''}"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span>${actions}</div><time class="timeline-time">${timeFormatter.format(event.time)}</time></div>`;
     }).join('') : '<div class="timeline-empty"><span class="empty-icon">' + icon('sun') + '</span><strong>Новый день — чистый лист</strong><p>Начните смену, и здесь появятся<br>события рабочего дня.</p></div>';
   }
   function renderWeek() {
@@ -383,6 +383,7 @@
   }
   function openShift(id = null) {
     const shift = id == null ? null : dashboard.shifts.find(item => String(item.id) === String(id));
+    if (id != null && !shift) { notify('Эта смена больше недоступна. Обновите список смен.', true); return; }
     editingShift = shift ? { ...shift } : null; $('#shift-form').reset();
     $('#shift-title').textContent = shift ? 'Изменить смену' : 'Добавить смену';
     $('#shift-start').value = dateInput(shift?.startedAt ?? now()); $('#shift-end').value = shift?.endedAt != null ? dateInput(shift.endedAt) : '';

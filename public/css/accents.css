@@ -122,7 +122,8 @@ button { color: inherit; }
 .timeline-content p, .timeline-content > span { color: #959fb3; font-size: 9px; }
 .timeline-time { color: #97a6c1; font-size: 10px; }
 .timeline-item.has-action { min-height: 96px; padding-bottom: 14px; }
-.timeline-delete.button.small { display: inline-flex; margin-top: 9px; min-height: 32px; padding: 6px 9px; font-size: 10px; white-space: normal; text-align: left; }
+.timeline-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.timeline-actions .button.small { display: inline-flex; min-height: 32px; padding: 6px 9px; font-size: 10px; white-space: normal; text-align: left; }
 .timeline-empty { min-height: 260px; color: #929eb3; font-size: 11px; }
 .timeline-empty strong { color: #c8cedb; font-weight: 400; font-size: 13px; }
 .empty-icon { color: #8fa9d7; background: #172033; border: 1px solid #6e91d61a; border-radius: 50%; }
