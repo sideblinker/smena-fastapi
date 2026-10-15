@@ -294,10 +294,12 @@
   }
   async function setView(name) {
     if (!viewNames[name] || (!isAdmin() && ['employees', 'audit'].includes(name)) || (name === 'reports' && !can('view_reports'))) name = 'overview';
+    const previousView = view;
     view = name;
     $$('.section-view').forEach(element => { element.hidden = element.id !== `view-${name}`; });
     $$('.nav-link').forEach(element => { const active = element.dataset.view === name; element.classList.toggle('active', active); if (active) element.setAttribute('aria-current', 'page'); else element.removeAttribute('aria-current'); });
     $('#breadcrumb-current').textContent = viewNames[name];
+    if (previousView !== name) document.dispatchEvent(new CustomEvent('smena:viewchange', { detail: { view: name } }));
     if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
     renderAccount();
     if (name === 'employees') await loadUsers();
