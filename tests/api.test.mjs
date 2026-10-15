@@ -181,6 +181,81 @@ test('manual editing validates all break boundaries, overlaps and future times',
   assert.equal((await f.admin.call('/api/shifts','POST',{...base,startedAt:start+3*HOUR,endedAt:start+4*HOUR})).status,201);
 });
 
+test('an employee without optional permissions can edit own shift times and breaks but cannot add or delete shifts', async (t) => {
+  const f = await fixture(t); const employee = await f.employee('baseline', []);
+  const start = f.now - 10*HOUR;
+  const added = await f.admin.call('/api/shifts','POST',{
+    userId:employee.user.id,startedAt:start,endedAt:start+4*HOUR,
+    breaks:[{startedAt:start+HOUR,endedAt:start+1.5*HOUR}],note:'Исходная смена',
+  });
+  assert.equal(added.status,201);
+  const id = added.data.shift.id;
+  const changes = {
+    version:added.data.shift.version,startedAt:start-0.5*HOUR,endedAt:start+4.5*HOUR,
+    breaks:[{startedAt:start+HOUR,endedAt:start+1.25*HOUR},{startedAt:start+3*HOUR,endedAt:start+3.5*HOUR}],
+    note:'Исправлено сотрудником',
+  };
+  const edited = await employee.call('/api/shifts/'+id,'PATCH',changes);
+  assert.equal(edited.status,200,JSON.stringify(edited.data));
+  assert.equal(edited.data.shift.userId,employee.user.id);
+  assert.equal(edited.data.shift.startedAt,changes.startedAt);
+  assert.equal(edited.data.shift.endedAt,changes.endedAt);
+  assert.deepEqual(edited.data.shift.breaks,changes.breaks);
+  assert.equal(edited.data.shift.note,changes.note);
+  assert.equal(edited.data.shift.version,changes.version+1);
+  const dashboard = await employee.call('/api/dashboard');
+  assert.deepEqual(dashboard.data.user.permissions,[]);
+  assert.deepEqual(dashboard.data.shifts,[edited.data.shift]);
+  assert.equal((await employee.call('/api/shifts','POST',{
+    userId:employee.user.id,startedAt:start+5*HOUR,endedAt:start+6*HOUR,breaks:[],
+  })).status,403);
+  assert.equal((await employee.call('/api/shifts/'+id,'DELETE',{version:edited.data.shift.version})).status,403);
+  assert.deepEqual((await employee.call('/api/dashboard')).data.shifts,[edited.data.shift]);
+  assert.equal((await f.client().call('/api/shifts/'+id,'PATCH',{version:edited.data.shift.version,note:'Anonymous'})).status,401);
+  await f.admin.call('/api/users/'+employee.user.id,'PATCH',{active:false});
+  assert.equal((await employee.call('/api/shifts/'+id,'PATCH',{version:edited.data.shift.version,note:'Disabled'})).status,401);
+});
+
+test('shift editing always uses stored ownership, rejects owner tampering and allows admin edits across employees', async (t) => {
+  const f = await fixture(t);
+  const alice = await f.employee('alice', []);
+  const boris = await f.employee('boris', ['edit_own_shifts']);
+  const shifts = new Map();
+  for (const user of [alice.user,boris.user,f.adminUser]) {
+    const added = await f.admin.call('/api/shifts','POST',{
+      userId:user.id,startedAt:f.now-4*HOUR,endedAt:f.now-HOUR,breaks:[],note:'Original',
+    });
+    assert.equal(added.status,201);
+    shifts.set(user.id,added.data.shift);
+  }
+  for (const [employee,foreignUser] of [[alice,boris.user],[boris,alice.user]]) {
+    const own = shifts.get(employee.user.id);
+    for (const target of [shifts.get(foreignUser.id),shifts.get(f.adminUser.id)]) {
+      assert.equal((await employee.call('/api/shifts/'+target.id,'PATCH',{version:target.version,note:'Foreign change'})).status,403);
+      assert.equal((await employee.call('/api/shifts/'+target.id,'PATCH',{version:target.version,userId:employee.user.id,note:'Forged owner'})).status,403);
+      assert.equal((await employee.call('/api/shifts/'+target.id+'?userId='+employee.user.id,'PATCH',{version:target.version,note:'Forged query owner'})).status,403);
+    }
+    for (const forgedOwner of [{userId:foreignUser.id},{user_id:foreignUser.id},{ownerId:foreignUser.id}]) {
+      assert.equal((await employee.call('/api/shifts/'+own.id,'PATCH',{version:own.version,...forgedOwner,note:'Transfer'})).status,400);
+    }
+    const unchanged = (await f.admin.call('/api/dashboard?userId='+employee.user.id)).data.shifts[0];
+    assert.deepEqual(unchanged,own);
+  }
+  assert.deepEqual((await f.admin.call('/api/dashboard')).data.shifts,[shifts.get(f.adminUser.id)]);
+  for (const employee of [alice,boris]) {
+    const own = shifts.get(employee.user.id);
+    const changes = {version:own.version,startedAt:f.now-5*HOUR,endedAt:f.now-0.5*HOUR,
+      breaks:[{startedAt:f.now-3*HOUR,endedAt:f.now-2*HOUR}],note:'Admin edit'};
+    const edited = await f.admin.call('/api/shifts/'+own.id,'PATCH',changes);
+    assert.equal(edited.status,200,JSON.stringify(edited.data));
+    assert.equal(edited.data.shift.userId,employee.user.id);
+    assert.equal(edited.data.shift.startedAt,changes.startedAt);
+    assert.equal(edited.data.shift.endedAt,changes.endedAt);
+    assert.deepEqual(edited.data.shift.breaks,changes.breaks);
+    assert.deepEqual((await employee.call('/api/dashboard')).data.shifts,[edited.data.shift]);
+  }
+});
+
 test('concurrent shift edit uses compare-and-swap and does not overwrite winning breaks', async (t) => {
   const f = await fixture(t); const start = f.now-10*HOUR;
   const added = await f.admin.call('/api/shifts','POST',{userId:f.adminUser.id,startedAt:start,endedAt:start+4*HOUR,breaks:[]});

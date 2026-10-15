@@ -12,7 +12,7 @@
   const permissions = {
     track_time: ['Учёт рабочего времени', 'Начинать и завершать свою смену, отмечать перерывы'],
     edit_own_profile: ['Изменение профиля', 'Редактировать своё имя, должность и отдел'],
-    edit_own_shifts: ['Исправление своих смен', 'Добавлять, изменять и удалять собственные записи'],
+    edit_own_shifts: ['Добавление и удаление своих смен', 'Добавлять и удалять собственные записи. Исправлять свои смены можно всегда'],
     view_reports: ['Просмотр отчётов', 'Видеть итоги своего рабочего времени'],
     export_reports: ['Экспорт CSV', 'Скачивать отчёты о своём времени']
   };
@@ -30,6 +30,8 @@
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const isAdmin = () => session.user?.role === 'admin';
   const can = permission => isAdmin() || !!session.user?.permissions?.includes(permission);
+  const canEditShift = shift => !!session.user && (isAdmin() || String(shift.userId) === String(session.user.id));
+  const canDeleteShift = shift => canEditShift(shift) && can('edit_own_shifts');
   const now = () => Date.now() + offset;
   const pad = value => String(value).padStart(2, '0');
   const numericTime = value => typeof value === 'number' ? value : Date.parse(value);
@@ -203,10 +205,10 @@
     events.sort((a, b) => b.time - a.time);
     const shownShifts = new Set();
     $('#timeline').innerHTML = events.length ? events.slice(0, 5).map(event => {
-      const shiftId = String(event.shift.id), manageable = isAdmin() && !shownShifts.has(shiftId);
+      const shiftId = String(event.shift.id), manageable = canEditShift(event.shift) && !shownShifts.has(shiftId);
       shownShifts.add(shiftId);
-      const actions = manageable ? `<div class="timeline-actions"><button type="button" class="button small" data-action="edit-shift" data-id="${escapeHTML(shiftId)}" aria-label="Изменить смену от ${fullFormatter.format(event.shift.startedAt)}">Изменить смену</button><button type="button" class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shiftId)}" aria-label="Удалить смену от ${fullFormatter.format(event.shift.startedAt)}">Удалить смену</button></div>` : '';
-      return `<div class="timeline-item${manageable ? ' has-action' : ''}"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span>${actions}</div><time class="timeline-time">${timeFormatter.format(event.time)}</time></div>`;
+      const actions = manageable ? `<div class="timeline-actions"><button type="button" class="button small" data-action="edit-shift" data-id="${escapeHTML(shiftId)}" aria-label="Изменить смену от ${fullFormatter.format(event.shift.startedAt)}">Изменить смену</button>${canDeleteShift(event.shift) ? `<button type="button" class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shiftId)}" aria-label="Удалить смену от ${fullFormatter.format(event.shift.startedAt)}">Удалить смену</button>` : ''}</div>` : '';
+      return `<div class="timeline-item${manageable ? ' has-action' : ''}"><span class="timeline-marker">${icon(event.symbol)}</span><div class="timeline-content"><strong>${event.title}</strong><span>${event.description}</span></div><time class="timeline-time">${timeFormatter.format(event.time)}</time>${actions}</div>`;
     }).join('') : '<div class="timeline-empty"><span class="empty-icon">' + icon('sun') + '</span><strong>Новый день — чистый лист</strong><p>Начните смену, и здесь появятся<br>события рабочего дня.</p></div>';
   }
   function renderWeek() {
@@ -220,11 +222,11 @@
   function emptyState(title, description) { return `<div class="empty-state"><span class="empty-icon">${icon('history')}</span><strong>${escapeHTML(title)}</strong><p>${escapeHTML(description)}</p></div>`; }
   function shiftTable(shifts, compact = false) {
     if (!shifts.length) return emptyState('Смен пока нет', 'Начните работу — первая запись появится здесь.');
-    const editable = !compact && can('edit_own_shifts');
+    const editable = !compact && shifts.some(canEditShift);
     return `<div class="table-wrap"><table class="data-table"><thead><tr><th>Дата</th><th>${compact ? 'Отработано' : 'Начало / конец'}</th>${compact ? '' : '<th>Перерывы</th><th>Отработано</th>'}<th>Статус</th>${editable ? '<th>Действия</th>' : ''}</tr></thead><tbody>${shifts.map(shift => {
       const metric = metrics(shift), label = metric.status === 'finished' ? 'Завершена' : metric.status === 'break' ? 'Перерыв' : 'В работе';
       const ending = shift.endedAt == null ? '—' : timeFormatter.format(shift.endedAt) + (dateKey(shift.endedAt) !== dateKey(shift.startedAt) ? ` · ${dateFormatter.format(shift.endedAt)}` : '');
-      return `<tr><td><span class="table-date">${dateFormatter.format(shift.startedAt)}</span><span class="table-secondary">${zonedDate(shift.startedAt).getUTCFullYear()}</span>${shift.note ? `<span class="shift-note" title="${escapeHTML(shift.note)}">${escapeHTML(shift.note)}</span>` : ''}</td><td${compact ? ' class="table-duration"' : ''}>${compact ? readable(metric.workMs) : `${timeFormatter.format(shift.startedAt)} <span class="table-secondary inline">/ ${ending}</span>`}</td>${compact ? '' : `<td>${readable(metric.breakMs)}</td><td class="table-duration">${readable(metric.workMs)}</td>`}<td><span class="pill ${metric.status === 'working' ? 'active' : metric.status === 'break' ? 'paused' : ''}">${label}</span></td>${editable ? `<td><div class="row-actions"><button class="button small" data-action="edit-shift" data-id="${escapeHTML(shift.id)}">Изменить</button><button class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shift.id)}" aria-label="Удалить смену от ${dateFormatter.format(shift.startedAt)}">Удалить</button></div></td>` : ''}</tr>`;
+      return `<tr><td><span class="table-date">${dateFormatter.format(shift.startedAt)}</span><span class="table-secondary">${zonedDate(shift.startedAt).getUTCFullYear()}</span>${shift.note ? `<span class="shift-note" title="${escapeHTML(shift.note)}">${escapeHTML(shift.note)}</span>` : ''}</td><td${compact ? ' class="table-duration"' : ''}>${compact ? readable(metric.workMs) : `${timeFormatter.format(shift.startedAt)} <span class="table-secondary inline">/ ${ending}</span>`}</td>${compact ? '' : `<td>${readable(metric.breakMs)}</td><td class="table-duration">${readable(metric.workMs)}</td>`}<td><span class="pill ${metric.status === 'working' ? 'active' : metric.status === 'break' ? 'paused' : ''}">${label}</span></td>${editable ? `<td><div class="row-actions">${canEditShift(shift) ? `<button class="button small" data-action="edit-shift" data-id="${escapeHTML(shift.id)}">Изменить</button>` : ''}${canDeleteShift(shift) ? `<button class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shift.id)}" aria-label="Удалить смену от ${dateFormatter.format(shift.startedAt)}">Удалить</button>` : ''}</div></td>` : ''}</tr>`;
     }).join('')}</tbody></table></div>`;
   }
   function renderHistory() {
@@ -384,6 +386,7 @@
   function openShift(id = null) {
     const shift = id == null ? null : dashboard.shifts.find(item => String(item.id) === String(id));
     if (id != null && !shift) { notify('Эта смена больше недоступна. Обновите список смен.', true); return; }
+    if (shift ? !canEditShift(shift) : !(can('edit_own_shifts') && (isAdmin() || String(selectedUserId) === String(session.user.id)))) { notify('Нет доступа к изменению этой смены.', true); return; }
     editingShift = shift ? { ...shift } : null; $('#shift-form').reset();
     $('#shift-title').textContent = shift ? 'Изменить смену' : 'Добавить смену';
     $('#shift-start').value = dateInput(shift?.startedAt ?? now()); $('#shift-end').value = shift?.endedAt != null ? dateInput(shift.endedAt) : '';
@@ -442,6 +445,7 @@
       if (action === 'delete-shift') {
         const shift = dashboard.shifts.find(item => String(item.id) === String(id));
         if (!shift) { await loadDashboard(); notify('Список смен обновился. Выберите смену заново.', true); return; }
+        if (!canDeleteShift(shift)) { notify('Нет права на удаление этой смены.', true); return; }
         confirmAction('Удалить смену целиком?', `${dashboard.user.name}: смена от ${fullFormatter.format(shift.startedAt)} будет удалена вместе со всеми перерывами. Её события исчезнут, рабочее время пересчитается. Действие останется в журнале.`, 'Удалить смену', async () => {
           try { await api(`/api/shifts/${encodeURIComponent(id)}`, { method: 'DELETE', body: { version: shift.version } }); }
           catch (error) {

@@ -121,9 +121,9 @@ button { color: inherit; }
 .timeline-content { color: #c9cdd9; font-size: 11px; }.timeline-content strong { font-weight: 450; }
 .timeline-content p, .timeline-content > span { color: #959fb3; font-size: 9px; }
 .timeline-time { color: #97a6c1; font-size: 10px; }
-.timeline-item.has-action { min-height: 96px; padding-bottom: 14px; }
-.timeline-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.timeline-actions .button.small { display: inline-flex; min-height: 32px; padding: 6px 9px; font-size: 10px; white-space: normal; text-align: left; }
+.timeline-item.has-action { display: grid; grid-template-columns: 27px minmax(0,1fr) auto; column-gap: 12px; row-gap: 0; align-content: start; min-height: 88px; padding-bottom: 14px; }
+.timeline-actions { grid-column: 1 / -1; display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; margin-top: 9px; position: relative; z-index: 1; }
+.timeline-actions .button.small { display: inline-flex; flex: 0 0 auto; min-height: 32px; padding: 6px 4px; font-size: 10px; white-space: nowrap; text-align: center; }
 .timeline-empty { min-height: 260px; color: #929eb3; font-size: 11px; }
 .timeline-empty strong { color: #c8cedb; font-weight: 400; font-size: 13px; }
 .empty-icon { color: #8fa9d7; background: #172033; border: 1px solid #6e91d61a; border-radius: 50%; }

@@ -460,7 +460,8 @@ async function routeTime(request, context, actor, url, path, method, now) {
   }
   const shiftMatch = path.match(/^\/api\/shifts\/([^/]+)$/);
   if (shiftMatch && ['PATCH','DELETE'].includes(method)) {
-    requirePermission(actor, 'edit_own_shifts');
+    // Каждый сотрудник может исправлять свои смены; удаление требует отдельного права.
+    if (method === 'DELETE') requirePermission(actor, 'edit_own_shifts');
     const s = await shiftRow(db, shiftMatch[1]); requireOwn(actor, s.user_id);
     const body = await bodyJson(request);
     if (method === 'DELETE') {
