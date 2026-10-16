@@ -16,7 +16,8 @@
     view_reports: ['Просмотр отчётов', 'Видеть итоги своего рабочего времени'],
     export_reports: ['Экспорт CSV', 'Скачивать отчёты о своём времени']
   };
-  const viewNames = { overview: 'Обзор', history: 'История смен', calendar: 'Календарь', employees: 'Сотрудники', reports: 'Отчёты', timesheet: 'Табель', audit: 'Журнал действий' };
+  const viewNames = { overview: 'Обзор', history: 'История смен', calendar: 'Календарь', requests: 'Заявки', employees: 'Сотрудники', reports: 'Отчёты', timesheet: 'Табель', audit: 'Журнал действий' };
+  const requestLabels = { pending: 'На рассмотрении', approved: 'Одобрена', rejected: 'Отклонена', cancelled: 'Отменена' };
   const absenceLabels = { vacation: 'Отпуск', day_off: 'Отгул', other: 'Другое отсутствие' };
   const dayLabels = { upcoming: 'По графику', not_started: 'Не начата', working: 'В работе', break: 'Перерыв', finished: 'Завершена', missed: 'Не отмечена' };
   const teamLabels = { working: 'На работе', break: 'На перерыве', finished: 'Завершили', not_started: 'Не начали', absence: 'Отсутствуют', day_off: 'Выходной' };
@@ -31,6 +32,7 @@
   let calendarData = null, calendarRequest = 0, calendarDay = null;
   let teamData = null, teamRequest = 0, teamFilter = 'all';
   let timesheetData = null, timesheetRequest = 0, timesheetReady = false, absenceUserId = null;
+  let absenceRequests = null, requestsRequest = 0, requestDecision = null;
   const shiftCache = new Map();
 
   const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -113,10 +115,16 @@
     confirmCallback = null;
     dashboardRequest += 1; reportRequest += 1;
     calendarRequest += 1; teamRequest += 1; timesheetRequest += 1;
+    requestsRequest += 1; absenceRequests = null; requestDecision = null;
     calendarData = null; teamData = null; timesheetData = null; calendarDay = null; timesheetReady = false; shiftCache.clear();
     users = []; dashboard = { user: null, schedule: null, shifts: [] }; selectedUserId = null;
     editingShift = null; editingEmployeeId = null; absenceUserId = null; teamFilter = 'all';
     resetCalendarView(); invalidateTimesheet();
+    $('#requests-list').replaceChildren(); $('#request-decision-summary').replaceChildren();
+    ['#requests-summary', '#request-person', '#request-error', '#request-decision-error', '#request-decision-help'].forEach(selector => { $(selector).textContent = ''; });
+    $('#requests-badge').textContent = ''; $('#requests-badge').hidden = true; $('#requests-badge').removeAttribute('aria-label');
+    $('#requests-filter').value = 'all'; planningFeedback('#requests-feedback');
+    $('#requests-list').setAttribute('aria-busy', 'false');
     ['#employees-table', '#history-table', '#recent-shifts', '#report-table', '#audit-table', '#timeline', '#week-chart', '#team-stats', '#team-live-members', '#team-live-filters', '#selected-user', '#day-detail-body', '#permission-options', '#shift-breaks', '#schedule-weekdays'].forEach(selector => $(selector).replaceChildren());
     ['#selected-name', '#selected-meta', '#profile-login', '#profile-role', '#day-detail-person', '#absence-person', '#schedule-person', '#confirm-title', '#confirm-text', '#confirm-error', '#week-total'].forEach(selector => { $(selector).textContent = ''; });
     $$('[data-account-name], [data-account-role], [data-avatar]').forEach(element => { element.textContent = ''; });
@@ -167,10 +175,12 @@
     $('#report-from').value = dateKey(monthStart(now())); $('#report-to').value = dateKey(now());
     $('#calendar-month').value = dateKey(now()).slice(0, 7); $('#timesheet-month').value = dateKey(now()).slice(0, 7);
     $('#timesheet-scope').value = isAdmin() ? 'all' : 'selected';
+    $('#requests-filter').value = isAdmin() ? 'pending' : 'all';
     await loadDashboard();
     $('#auth-screen').hidden = true; $('#app').hidden = false;
     renderAccount();
     await setView(location.hash.slice(1) || 'overview');
+    if (view !== 'requests') await loadRequests({ quiet: true });
   }
   async function loadUsers() {
     if (!isAdmin()) return;
@@ -203,8 +213,10 @@
     $('#nav-role').textContent = isAdmin() ? 'ПАНЕЛЬ АДМИНИСТРАТОРА' : 'ЛИЧНЫЙ КАБИНЕТ';
     $('#breadcrumb-role').textContent = isAdmin() ? 'Администрирование' : 'Личный кабинет';
     $$('[data-admin]').forEach(element => { element.hidden = !isAdmin(); });
+    $$('[data-employee]').forEach(element => { element.hidden = isAdmin(); });
     $$('[data-permission]').forEach(element => { element.hidden = !can(element.dataset.permission); });
-    $('#team-context').hidden = !isAdmin() || ['employees', 'audit'].includes(view) || (view === 'timesheet' && $('#timesheet-scope').value === 'all');
+    $('#team-context').hidden = !isAdmin() || ['employees', 'audit', 'requests'].includes(view) || (view === 'timesheet' && $('#timesheet-scope').value === 'all');
+    $('#requests-description').textContent = isAdmin() ? 'Заявки команды на отпуск и отгул. Рассмотрите даты и сообщите решение.' : 'Ваши заявки, решения администратора и история отдыха.';
   }
   function plannedHours() {
     const schedule = dashboard.schedule;
@@ -391,6 +403,7 @@
       return `<article class="day-shift"><div class="day-shift-top"><strong>${timeFormatter.format(shift.startedAt)} — ${shift.endedAt == null ? 'продолжается' : timeFormatter.format(shift.endedAt) + (dateKey(shift.endedAt) !== day.date ? ` · ${dateFormatter.format(shift.endedAt)}` : '')}</strong><span>${readable(metric.workMs)}</span></div><p class="day-shift-state">${shift.endedAt == null ? metric.status === 'break' ? 'Сейчас на перерыве' : 'Рабочее время идёт' : 'Смена завершена'}</p>${shift.breaks.length ? `<ul class="day-break-list">${shift.breaks.map(pause => `<li><span>${icon('coffee')} ${timeFormatter.format(pause.startedAt)} — ${pause.endedAt == null ? 'продолжается' : timeFormatter.format(pause.endedAt)}</span><strong>${readable((pause.endedAt ?? now()) - pause.startedAt)}</strong></li>`).join('')}</ul>` : '<p class="card-subtitle">Без перерывов</p>'}${shift.note ? `<p class="day-shift-note">${escapeHTML(shift.note)}</p>` : ''}<div class="day-shift-actions">${canEditShift(shift) ? `<button class="button small" data-action="edit-shift" data-id="${escapeHTML(shift.id)}">Изменить смену</button>` : ''}${canDeleteShift(shift) ? `<button class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shift.id)}">Удалить</button>` : ''}</div></article>`;
     }).join('') : '<div class="day-empty">Отметок начала смены в этот день пока нет.</div>';
     if (isAdmin() && !absence) html += '<button class="button drawer-absence-button" data-action="add-absence">Добавить отсутствие на этот день</button>';
+    if (!isAdmin()) html += '<button class="button drawer-absence-button" data-action="new-request" data-calendar-request>Запросить отпуск / отгул</button>';
     html += '<p class="planning-note drawer-note">План по текущему графику · Ночные смены — по дате начала</p>';
     body.innerHTML = html; body.scrollTop = scroll;
     if (focusedAction && $('#calendar-day-dialog').open) {
@@ -414,6 +427,72 @@
     $('#absence-person').textContent = employee?.name || 'Сотрудник'; $('#absence-error').textContent = '';
     if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
     $('#absence-dialog').showModal();
+  }
+  async function loadRequests({ quiet = false } = {}) {
+    if (!session.user) return false;
+    const sequence = ++requestsRequest, token = session.csrfToken, userId = session.user.id, status = $('#requests-filter').value;
+    $('#requests-list').setAttribute('aria-busy', 'true');
+    if (!quiet) planningFeedback('#requests-feedback', 'Загружаем заявки…');
+    const current = () => sequence === requestsRequest && session.user && String(session.user.id) === String(userId) && session.csrfToken === token && $('#requests-filter').value === status;
+    try {
+      const result = await api(`/api/absence-requests?${new URLSearchParams({ status })}`);
+      if (!current()) return false;
+      absenceRequests = result; planningFeedback('#requests-feedback'); renderRequests(); return true;
+    } catch (error) {
+      if (current()) planningFeedback('#requests-feedback', error.message + (absenceRequests ? ' Показаны последние загруженные данные.' : ''), true);
+      return false;
+    } finally { if (current()) $('#requests-list').setAttribute('aria-busy', 'false'); }
+  }
+  function requestDates(request) {
+    const start = fullFormatter.format(dayFromKey(request.startDate)).split(',')[0], end = fullFormatter.format(dayFromKey(request.endDate)).split(',')[0];
+    return request.startDate === request.endDate ? start : `${start} — ${end}`;
+  }
+  function requestSummary(request) {
+    return `<strong>${escapeHTML(request.user?.name || session.user?.name || 'Сотрудник')}</strong><span>${escapeHTML(absenceLabels[request.type] || 'Отсутствие')} · ${escapeHTML(requestDates(request))}</span>${request.note ? `<p>${escapeHTML(request.note)}</p>` : '<p class="request-no-note">Комментарий к заявке не добавлен.</p>'}`;
+  }
+  function renderRequests() {
+    if (!absenceRequests || !session.user) return;
+    const list = $('#requests-list'), focused = list.contains(document.activeElement) ? document.activeElement.closest('[data-action]') : null;
+    const focusKey = focused ? { action: focused.dataset.action, id: focused.dataset.id } : null;
+    const counts = absenceRequests.counts || {}, pending = Number(counts.pending) || 0;
+    $('#requests-badge').textContent = pending > 99 ? '99+' : String(pending); $('#requests-badge').hidden = pending === 0;
+    $('#requests-badge').setAttribute('aria-label', `На рассмотрении: ${pending}`);
+    $('#requests-summary').textContent = `На рассмотрении: ${pending} · Одобрено: ${Number(counts.approved) || 0}`;
+    const requests = absenceRequests.requests || [];
+    list.innerHTML = requests.length ? requests.map(request => {
+      const own = String(request.userId) === String(session.user.id), waiting = request.status === 'pending';
+      const days = Math.round((dayFromKey(request.endDate) - dayFromKey(request.startDate)) / DAY) + 1;
+      const decided = request.decidedAt ? `${request.status === 'cancelled' ? 'Отменена' : 'Решение'} ${fullFormatter.format(numericTime(request.decidedAt))}${request.decidedBy?.name ? ` · ${request.decidedBy.name}` : ''}` : '';
+      return `<article class="absence-request-card"><div class="request-card-main"><div class="request-card-heading"><span class="request-kind-icon">${icon(request.type === 'vacation' ? 'sun' : 'calendar')}</span><div><h2>${escapeHTML(absenceLabels[request.type] || 'Отсутствие')}</h2>${isAdmin() ? `<p>${escapeHTML(request.user?.name || 'Сотрудник')}${request.user?.department ? ` · ${escapeHTML(request.user.department)}` : ''}</p>` : ''}</div><span class="request-status ${escapeHTML(request.status)}">${escapeHTML(requestLabels[request.status] || request.status)}</span></div><div class="request-period"><strong>${escapeHTML(requestDates(request))}</strong><span>Дней: ${days}</span></div>${request.note ? `<p class="request-note">${escapeHTML(request.note)}</p>` : ''}${request.decisionNote ? `<div class="request-decision-note"><span>Комментарий администратора</span><p>${escapeHTML(request.decisionNote)}</p></div>` : ''}${request.status === 'approved' && request.absenceId == null ? '<p class="request-calendar-removed">Запись отсутствия удалена из календаря администратором.</p>' : ''}<div class="request-card-meta"><span>Подана ${fullFormatter.format(numericTime(request.createdAt))}</span>${decided ? `<span>${escapeHTML(decided)}</span>` : ''}</div></div>${waiting ? `<div class="request-card-actions">${isAdmin() ? `<button class="button small dark" data-action="approve-request" data-id="${escapeHTML(request.id)}">Одобрить</button><button class="button small" data-action="reject-request" data-id="${escapeHTML(request.id)}">Отклонить</button>` : ''}${own ? `<button class="text-button request-cancel" data-action="cancel-request" data-id="${escapeHTML(request.id)}">Отменить заявку</button>` : ''}</div>` : ''}</article>`;
+    }).join('') : emptyState($('#requests-filter').value === 'pending' ? 'Нет заявок на рассмотрении' : 'Заявок пока нет', isAdmin() ? 'Здесь появятся запросы команды на отпуск и отгул.' : 'Подайте заявку или выберите другой статус, чтобы посмотреть историю.');
+    if (focusKey) {
+      const next = [...list.querySelectorAll('[data-action]')].find(button => button.dataset.action === focusKey.action && button.dataset.id === focusKey.id);
+      (next || $('#requests-filter')).focus({ preventScroll: true });
+    }
+  }
+  function openRequest(fromCalendar = false) {
+    if (!session.user) return;
+    let date = dateKey(now());
+    if (fromCalendar) date = $('#calendar-day-dialog').open && calendarDay ? calendarDay : $('#calendar-month').value === date.slice(0, 7) ? date : `${$('#calendar-month').value}-01`;
+    $('#request-form').reset(); $('#request-start').value = date; $('#request-end').value = date;
+    $('#request-person').textContent = session.user.name; $('#request-error').textContent = '';
+    if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
+    $('#request-dialog').showModal(); $('#request-start').focus();
+  }
+  function openRequestDecision(id, status) {
+    if (!isAdmin()) return;
+    const request = absenceRequests?.requests.find(item => String(item.id) === String(id));
+    if (!request || request.status !== 'pending') { notify('Эта заявка уже изменилась. Обновите список.', true); void loadRequests(); return; }
+    requestDecision = { ...request, nextStatus: status };
+    $('#request-decision-form').reset(); $('#request-decision-summary').innerHTML = requestSummary(request);
+    const reject = status === 'rejected';
+    $('#request-decision-title').textContent = reject ? 'Отклонить заявку?' : 'Одобрить заявку?';
+    $('#request-decision-label').textContent = reject ? 'Причина отклонения' : 'Комментарий к решению';
+    $('#request-decision-note').required = reject; $('#request-decision-note').minLength = reject ? 3 : 0;
+    $('#request-decision-help').textContent = reject ? 'Обязательно: от 3 до 500 символов. Сотрудник увидит причину.' : 'Необязательно. После одобрения отсутствие появится в календаре сотрудника.';
+    $('#request-decision-submit').textContent = reject ? 'Отклонить заявку' : 'Одобрить заявку';
+    $('#request-decision-submit').className = `button ${reject ? 'danger' : 'dark'}`;
+    $('#request-decision-error').textContent = ''; $('#request-decision-dialog').showModal(); $('#request-decision-note').focus();
   }
   async function loadTeamStatus({ quiet = false } = {}) {
     if (!isAdmin()) return false;
@@ -493,6 +572,7 @@
   async function refreshPlanning({ forceDetails = false } = {}) {
     if (!session.user) return;
     const tasks = [];
+    tasks.push(loadRequests({ quiet: true }));
     if (view === 'calendar' || calendarData) tasks.push(loadCalendar({ quiet: true }));
     if (isAdmin() && (view === 'employees' || teamData)) tasks.push(loadTeamStatus({ quiet: true }));
     if (can('view_reports') && !document.body.classList.contains('printing-timesheet') && (view === 'timesheet' || timesheetData)) tasks.push(loadTimesheet({ quiet: true }));
@@ -502,12 +582,13 @@
   function auditDetails(entry) {
     let details = entry.details || {};
     if (typeof details === 'string') { try { details = JSON.parse(details); } catch { return escapeHTML(details); } }
-    const labels = { name: 'Имя', username: 'Логин', position: 'Должность', department: 'Отдел', active: 'Вход разрешён', archived: 'В архиве', passwordReset: 'Пароль сброшен', permissions: 'Права доступа', userId: 'Сотрудник', startedAt: 'Начало смены', endedAt: 'Конец смены', breaks: 'Перерывы', note: 'Комментарий', startTime: 'Начало рабочего дня', endTime: 'Конец рабочего дня', breakMinutes: 'Плановый перерыв, мин', weekdays: 'Рабочие дни', timezone: 'Часовой пояс', from: 'С даты', to: 'По дату', reason: 'Причина изменения', before: 'До изменения', after: 'После изменения', startDate: 'Первый день', endDate: 'Последний день', type: 'Вид отсутствия' };
+    const labels = { name: 'Имя', username: 'Логин', position: 'Должность', department: 'Отдел', active: 'Вход разрешён', archived: 'В архиве', passwordReset: 'Пароль сброшен', permissions: 'Права доступа', userId: 'Сотрудник', startedAt: 'Начало смены', endedAt: 'Конец смены', breaks: 'Перерывы', note: 'Комментарий', startTime: 'Начало рабочего дня', endTime: 'Конец рабочего дня', breakMinutes: 'Плановый перерыв, мин', weekdays: 'Рабочие дни', timezone: 'Часовой пояс', from: 'С даты', to: 'По дату', reason: 'Причина изменения', before: 'До изменения', after: 'После изменения', startDate: 'Первый день', endDate: 'Последний день', type: 'Вид отсутствия', status: 'Статус заявки', decisionNote: 'Комментарий к решению' };
     const format = (key, value) => {
       if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
       if (value == null) return key === 'endedAt' ? 'Продолжается' : '—';
       if (['before', 'after'].includes(key) && typeof value === 'object') return '\n' + Object.entries(value).filter(([field]) => labels[field]).map(([field, content]) => `  ${labels[field]}: ${format(field, content)}`).join('\n');
       if (key === 'type') return absenceLabels[value] || String(value);
+      if (key === 'status') return requestLabels[value] || String(value);
       if (key === 'userId') return users.find(user => String(user.id) === String(value))?.name || 'Сотрудник';
       if (key === 'permissions') return value.map(permission => permissions[permission]?.[0] || permission).join(', ') || 'Нет дополнительных прав';
       if (key === 'weekdays') return value.map(day => weekdays[day - 1]).join(', ') || 'Не заданы';
@@ -526,6 +607,7 @@
     const actions = { 'setup': 'Создание администратора', 'auth.setup': 'Создание администратора', 'login': 'Вход в систему', 'auth.login': 'Вход в систему', 'logout': 'Выход из системы', 'auth.logout': 'Выход из системы', 'user.create': 'Создан сотрудник', 'user.update': 'Изменён сотрудник', 'user.archive': 'Сотрудник отправлен в архив', 'profile.update': 'Обновлён профиль', 'password.change': 'Изменён пароль', 'auth.password_change': 'Изменён пароль', 'schedule.update': 'Изменён график', 'shift.start': 'Начата смена', 'shift.pause': 'Начат перерыв', 'shift.resume': 'Завершён перерыв', 'shift.finish': 'Завершена смена', 'shift.create': 'Добавлена смена', 'shift.update': 'Изменена смена', 'shift.delete': 'Удалена смена' };
     Object.assign(actions, { admin_created: 'Создан аккаунт администратора', user_created: 'Создан сотрудник', user_updated: 'Изменён сотрудник', user_archived: 'Сотрудник отправлен в архив', profile_updated: 'Обновлён профиль', password_changed: 'Изменён пароль', schedule_updated: 'Изменён график', shift_started: 'Начата смена', break_started: 'Начат перерыв', break_finished: 'Завершён перерыв', shift_finished: 'Завершена смена', shift_created: 'Добавлена смена', shift_updated: 'Изменена смена', shift_deleted: 'Удалена смена', report_exported: 'Скачан отчёт CSV' });
     Object.assign(actions, { absence_created: 'Добавлено отсутствие', absence_deleted: 'Удалено отсутствие' });
+    Object.assign(actions, { absence_request_created: 'Подана заявка на отсутствие', absence_request_approved: 'Заявка одобрена', absence_request_rejected: 'Заявка отклонена', absence_request_cancelled: 'Заявка отменена' });
     $('#audit-table').innerHTML = data.entries.length ? `<div class="table-wrap"><table class="data-table audit-table"><thead><tr><th>Дата и время</th><th>Пользователь</th><th>Действие</th><th>Подробности</th></tr></thead><tbody>${data.entries.map(entry => `<tr><td>${fullFormatter.format(numericTime(entry.createdAt))}</td><td>${escapeHTML(entry.actorName || 'Система')}</td><td>${escapeHTML(actions[entry.action] || entry.action)}</td><td><details><summary>${escapeHTML(entry.targetType === 'user' ? (users.find(user => String(user.id) === String(entry.targetId))?.name || 'Сотрудник') : entry.targetType === 'shift' ? 'Изменения смены' : 'Подробнее')}</summary><pre>${auditDetails(entry)}</pre></details></td></tr>`).join('')}</tbody></table></div>` : emptyState('Журнал пока пуст', 'Изменения появятся здесь автоматически.');
   }
   async function setView(name) {
@@ -541,6 +623,7 @@
     renderAccount();
     if (name === 'employees') { await loadUsers(); await loadTeamStatus(); }
     if (name === 'calendar') await loadCalendar();
+    if (name === 'requests') await loadRequests();
     if (name === 'timesheet') await loadTimesheet();
     if (name === 'reports') await loadReport();
     if (name === 'audit') await loadAudit();
@@ -655,6 +738,21 @@
       if (action === 'calendar-user') { $('#calendar-month').value = dateKey(now()).slice(0, 7); await selectUser(id, 'calendar'); }
       if (action === 'add-absence') openAbsence();
       if (action === 'refresh-team') await loadTeamStatus();
+      if (action === 'refresh-requests') await loadRequests();
+      if (action === 'new-request') openRequest(button.hasAttribute('data-calendar-request'));
+      if (action === 'approve-request' || action === 'reject-request') openRequestDecision(id, action === 'approve-request' ? 'approved' : 'rejected');
+      if (action === 'cancel-request') {
+        const request = absenceRequests?.requests.find(item => String(item.id) === String(id));
+        if (!request || request.status !== 'pending' || String(request.userId) !== String(session.user.id)) { notify('Можно отменить только свою заявку на рассмотрении.', true); return; }
+        const token = session.csrfToken;
+        confirmAction('Отменить заявку?', `${absenceLabels[request.type]}: ${requestDates(request)}. Заявка останется в истории со статусом «Отменена».`, 'Отменить заявку', async () => {
+          if (!session.user || session.csrfToken !== token) return;
+          try { await api(`/api/absence-requests/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: { version: request.version } }); }
+          catch (error) { if ([404, 409].includes(error.status) && session.csrfToken === token) await loadRequests({ quiet: true }); throw error; }
+          if (!session.user || session.csrfToken !== token) return;
+          $('#confirm-dialog').close(); confirmCallback = null; notify('Заявка отменена.');
+        }, true);
+      }
       if (action === 'team-filter') { teamFilter = button.dataset.status; renderTeamStatus(); }
       if (action === 'print-timesheet') {
         if (!can('view_reports') || !timesheetReady) { notify('Сначала дождитесь загрузки табеля.', true); return; }
@@ -802,6 +900,46 @@
       if (!payload.startDate || !payload.endDate || payload.startDate > payload.endDate) throw new Error('Последний день должен быть не раньше первого.');
       await mutate(async () => { await api('/api/absences', { method: 'POST', body: payload }); $('#absence-dialog').close(); }, 'Отсутствие добавлено в календарь.');
     } catch (error) { $('#absence-error').textContent = error.message; }
+  });
+  $('#request-form').addEventListener('submit', async event => {
+    event.preventDefault(); if (!session.user || mutationBusy) return;
+    const token = session.csrfToken, userId = session.user.id;
+    const sameUser = () => session.user && session.csrfToken === token && String(session.user.id) === String(userId);
+    const payload = { startDate: $('#request-start').value, endDate: $('#request-end').value, type: $('#request-type').value, note: $('#request-note').value.trim() };
+    $('#request-error').textContent = '';
+    try {
+      if (!payload.startDate || !payload.endDate || payload.startDate > payload.endDate) throw new Error('Последний день должен быть не раньше первого.');
+      await mutate(async () => {
+        await api('/api/absence-requests', { method: 'POST', body: payload });
+        if (!sameUser()) return;
+        $('#request-dialog').close(); $('#request-form').reset();
+        $('#requests-filter').value = isAdmin() ? 'pending' : 'all';
+        await setView('requests'); notify('Заявка отправлена на рассмотрение.');
+      });
+    } catch (error) { if (sameUser()) $('#request-error').textContent = error.message; }
+  });
+  $('#request-decision-form').addEventListener('submit', async event => {
+    event.preventDefault(); if (!isAdmin() || !requestDecision || mutationBusy) return;
+    const snapshot = requestDecision, token = session.csrfToken, decisionNote = $('#request-decision-note').value.trim();
+    const current = () => isAdmin() && session.csrfToken === token && requestDecision === snapshot;
+    $('#request-decision-error').textContent = '';
+    try {
+      if (snapshot.nextStatus === 'rejected' && decisionNote.length < 3) throw new Error('Укажите причину отклонения — не менее 3 символов.');
+      await mutate(async () => {
+        await api(`/api/absence-requests/${encodeURIComponent(snapshot.id)}`, { method: 'PATCH', body: { version: snapshot.version, status: snapshot.nextStatus, decisionNote } });
+        if (!current()) return;
+        $('#request-decision-dialog').close(); requestDecision = null;
+        notify(snapshot.nextStatus === 'approved' ? 'Заявка одобрена. Отсутствие добавлено в календарь.' : 'Заявка отклонена. Сотрудник увидит причину.');
+      });
+    } catch (error) {
+      if (!current()) return;
+      $('#request-decision-error').textContent = error.message;
+      if ([404, 409].includes(error.status)) await refreshPlanning();
+    }
+  });
+  $('#requests-filter').addEventListener('change', async () => {
+    requestsRequest += 1; absenceRequests = null; $('#requests-list').replaceChildren();
+    await loadRequests();
   });
   $('#calendar-month').addEventListener('change', async () => { resetCalendarView(); await loadCalendar(); });
   $('#calendar-grid').addEventListener('keydown', event => {

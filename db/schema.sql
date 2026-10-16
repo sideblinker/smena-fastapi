@@ -50,3 +50,15 @@ CREATE TABLE IF NOT EXISTS absences (
  CONSTRAINT absences_date_check CHECK(end_date >= start_date)
 );
 CREATE INDEX IF NOT EXISTS absences_user_dates ON absences(user_id,start_date,end_date);
+CREATE TABLE IF NOT EXISTS absence_requests (
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL REFERENCES users(id),
+ start_date TEXT NOT NULL, end_date TEXT NOT NULL, type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER,
+ decided_by TEXT REFERENCES users(id) ON DELETE SET NULL, decision_note TEXT NOT NULL DEFAULT '',
+ absence_id TEXT REFERENCES absences(id) ON DELETE SET NULL, version INTEGER NOT NULL DEFAULT 1,
+ CONSTRAINT absence_requests_type_check CHECK(type IN ('vacation','day_off')),
+ CONSTRAINT absence_requests_status_check CHECK(status IN ('pending','approved','rejected','cancelled')),
+ CONSTRAINT absence_requests_date_check CHECK(end_date >= start_date)
+);
+CREATE INDEX IF NOT EXISTS absence_requests_user_status_dates ON absence_requests(user_id,status,start_date,end_date);
+CREATE INDEX IF NOT EXISTS absence_requests_status_created ON absence_requests(status,created_at);

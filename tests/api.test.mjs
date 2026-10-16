@@ -509,13 +509,183 @@ test('persisted version-one SQLite upgrades additively and preserves users, shif
     .bind('legacy-audit','legacy-user','Старый сотрудник','shift_updated','shift','legacy-shift','{"legacy":true}',created).run();
   before.close();
   let upgraded = createSqliteDatabase(file);
-  assert.equal((await upgraded.prepare('PRAGMA user_version').first()).user_version,2);
+  assert.equal((await upgraded.prepare('PRAGMA user_version').first()).user_version,3);
   assert.equal((await upgraded.prepare('SELECT password_hash FROM users').first()).password_hash,'unchanged-hash');
   assert.equal((await upgraded.prepare('SELECT version,note FROM shifts').first()).version,3);
   assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM sessions').first()).count,1);
   assert.equal((await upgraded.prepare('SELECT details FROM audit_log').first()).details,'{"legacy":true}');
   assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM absences').first()).count,0);
+  assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM absence_requests').first()).count,0);
   upgraded.close(); upgraded=createSqliteDatabase(file);
   assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM users').first()).count,1);
+  upgraded.close();
+});
+
+test('absence requests are available to each employee but list and counts never expose other employees', async (t) => {
+  const f = await fixture(t); const a = await f.employee('request_alice',[]); const b = await f.employee('request_boris',[]);
+  const body = {startDate:'2026-10-20',endDate:'2026-10-21',type:'vacation',note:'Семейные планы'};
+  assert.equal((await f.client().call('/api/absence-requests')).status,401);
+  assert.equal((await a.call('/api/absence-requests','POST',body,{'X-CSRF-Token':''})).status,403);
+  assert.equal((await a.call('/api/absence-requests','POST',body,{Origin:'https://foreign.example'})).status,403);
+  const made = await a.call('/api/absence-requests','POST',body); assert.equal(made.status,201,JSON.stringify(made.data));
+  const own = made.data.request;
+  assert.equal(own.userId,a.user.id); assert.equal(own.user.name,a.user.name); assert.equal(own.status,'pending');
+  assert.equal(own.version,1); assert.equal(own.decidedAt,null); assert.equal(own.decidedBy,null); assert.equal(own.absenceId,null);
+  assert.deepEqual(Object.keys(own.user).sort(),['department','id','name','position']);
+  assert.equal((await b.call('/api/absence-requests')).data.requests.length,0);
+  assert.equal((await b.call('/api/absence-requests','POST',body)).status,201);
+  let listed = (await a.call('/api/absence-requests?userId='+b.user.id)).data;
+  assert.deepEqual(listed.requests.map((r)=>r.userId),[a.user.id]); assert.deepEqual(listed.counts,{pending:1,approved:0,rejected:0,cancelled:0});
+  listed = (await f.admin.call('/api/absence-requests')).data;
+  assert.equal(listed.requests.length,2); assert.equal(listed.counts.pending,2);
+  assert.equal((await a.call('/api/absence-requests?status=unknown')).status,400);
+  assert.equal((await b.call('/api/absence-requests/'+own.id+'/cancel','POST',{version:1})).status,403);
+  assert.equal((await f.admin.call('/api/absence-requests/'+own.id+'/cancel','POST',{version:1})).status,403);
+  assert.equal((await a.call('/api/absence-requests/'+own.id,'PATCH',{version:1,status:'approved'})).status,403);
+});
+
+test('request submission validates fields and dates and atomically prevents pending or absence overlap', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const body = {startDate:'2026-10-20',endDate:'2026-10-22',type:'day_off',note:''};
+  for (const invalid of [{startDate:'2026-02-30'}, {endDate:'2026-10-19'}, {endDate:'2028-01-01'}, {type:'other'},
+    {note:'a'.repeat(2001)}, {status:'approved'}, {userId:f.adminUser.id}, {version:1}])
+    assert.equal((await e.call('/api/absence-requests','POST',{...body,...invalid})).status,400);
+  const simultaneous = await Promise.all([e.call('/api/absence-requests','POST',body),e.call('/api/absence-requests','POST',body)]);
+  assert.deepEqual(simultaneous.map((r)=>r.status).sort(),[201,409]);
+  const id = simultaneous.find((r)=>r.status===201).data.request.id;
+  assert.equal((await e.call('/api/absence-requests','POST',{...body,startDate:'2026-10-22',endDate:'2026-10-23'})).status,409);
+  assert.equal((await e.call('/api/absence-requests','POST',{...body,startDate:'2026-10-23',endDate:'2026-10-23'})).status,201);
+  await f.admin.call('/api/absences','POST',{userId:e.user.id,startDate:'2026-10-25',endDate:'2026-10-26',type:'vacation'});
+  assert.equal((await e.call('/api/absence-requests','POST',{...body,startDate:'2026-10-26',endDate:'2026-10-27'})).status,409);
+  const audit = (await f.admin.call('/api/audit')).data.entries;
+  assert.equal(audit.filter((a)=>a.targetId===id && a.action==='absence_request_created').length,1);
+});
+
+test('approval creates exactly one absence reflected in calendar and timesheet and preserves approval history after absence deletion', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const made = await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-21',type:'vacation',note:'Моя заявка'});
+  const id = made.data.request.id;
+  const reviewed = await f.admin.call('/api/absence-requests/'+id,'PATCH',{version:1,status:'approved',decisionNote:'  Согласовано  '});
+  assert.equal(reviewed.status,200,JSON.stringify(reviewed.data));
+  const approved = reviewed.data.request;
+  assert.equal(approved.status,'approved'); assert.equal(approved.version,2); assert.equal(approved.decisionNote,'Согласовано');
+  assert.deepEqual(approved.decidedBy,{id:f.adminUser.id,name:f.adminUser.name}); assert.equal(approved.decidedAt,f.now); assert.ok(approved.absenceId);
+  const calendar = (await e.call('/api/calendar?month=2026-10')).data;
+  assert.equal(calendar.absences.length,1); assert.equal(calendar.absences[0].id,approved.absenceId);
+  assert.equal(calendar.days.find((d)=>d.date==='2026-10-20').kind,'absence');
+  const sheet = (await e.call('/api/timesheet?month=2026-10')).data;
+  assert.equal(sheet.rows[0].days.find((d)=>d.date==='2026-10-20').plannedMs,0);
+  assert.equal((await f.admin.call('/api/absence-requests/'+id,'PATCH',{version:1,status:'approved'})).status,409);
+  assert.equal((await f.admin.call('/api/absence-requests/'+id,'PATCH',{version:2,status:'rejected',decisionNote:'Повторное решение'})).status,409);
+  assert.equal((await e.call('/api/absence-requests/'+id+'/cancel','POST',{version:2})).status,409);
+  await f.admin.call('/api/absences/'+approved.absenceId,'DELETE',{version:1});
+  const history = (await e.call('/api/absence-requests')).data;
+  assert.equal(history.requests[0].status,'approved'); assert.equal(history.requests[0].absenceId,null); assert.equal(history.counts.approved,1);
+  assert.equal((await e.call('/api/calendar?month=2026-10')).data.absences.length,0);
+});
+
+test('rejection requires a reason, cancellation is pending-owner-only, and filtered counts retain all own statuses', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const made = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-20',type:'day_off'})).data.request;
+  for (const decisionNote of [undefined,'','  ','ab','x'.repeat(501)])
+    assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'rejected',decisionNote})).status,400);
+  assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:2,status:'rejected',decisionNote:'Недостаточно сотрудников'})).status,409);
+  assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'cancelled'})).status,400);
+  const rejected = await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'rejected',decisionNote:'  Недостаточно сотрудников  '});
+  assert.equal(rejected.status,200); assert.equal(rejected.data.request.decisionNote,'Недостаточно сотрудников'); assert.equal(rejected.data.request.absenceId,null);
+  const second = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-20',type:'day_off'})).data.request;
+  assert.equal((await e.call('/api/absence-requests/'+second.id+'/cancel','POST',{version:2})).status,409);
+  assert.equal((await e.call('/api/absence-requests/'+second.id+'/cancel','POST',{version:1,userId:f.adminUser.id})).status,400);
+  const cancelled = await e.call('/api/absence-requests/'+second.id+'/cancel','POST',{version:1});
+  assert.equal(cancelled.status,200); assert.equal(cancelled.data.request.status,'cancelled'); assert.equal(cancelled.data.request.decidedBy.id,e.user.id);
+  assert.equal((await e.call('/api/absence-requests/'+second.id+'/cancel','POST',{version:1})).status,409);
+  const third = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-20',type:'day_off'})).data.request;
+  const filtered = (await e.call('/api/absence-requests?status=pending')).data;
+  assert.deepEqual(filtered.requests.map((r)=>r.id),[third.id]); assert.deepEqual(filtered.counts,{pending:1,approved:0,rejected:1,cancelled:1});
+  const adminOwn = (await f.admin.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-20',type:'day_off'})).data.request;
+  assert.equal((await f.admin.call('/api/absence-requests/'+adminOwn.id+'/cancel','POST',{version:1})).status,200);
+  assert.equal((await e.call('/api/calendar?month=2026-10')).data.absences.length,0);
+});
+
+test('double approval and approval versus cancellation are atomic and create no duplicate absence or audit', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const firstRequest = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-20',type:'vacation'})).data.request;
+  const double = await Promise.all([
+    f.admin.call('/api/absence-requests/'+firstRequest.id,'PATCH',{version:1,status:'approved'}),
+    f.admin.call('/api/absence-requests/'+firstRequest.id,'PATCH',{version:1,status:'approved'}),
+  ]);
+  assert.deepEqual(double.map((r)=>r.status).sort(),[200,409]);
+  assert.equal((await e.call('/api/calendar?month=2026-10')).data.absences.length,1);
+  let audit = (await f.admin.call('/api/audit')).data.entries;
+  assert.equal(audit.filter((a)=>a.targetId===firstRequest.id && a.action==='absence_request_approved').length,1);
+  const next = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-22',endDate:'2026-10-22',type:'day_off'})).data.request;
+  const race = await Promise.all([
+    f.admin.call('/api/absence-requests/'+next.id,'PATCH',{version:1,status:'approved'}),
+    e.call('/api/absence-requests/'+next.id+'/cancel','POST',{version:1}),
+  ]);
+  assert.deepEqual(race.map((r)=>r.status).sort(),[200,409]);
+  const final = (await e.call('/api/absence-requests')).data.requests.find((r)=>r.id===next.id);
+  assert.ok(['approved','cancelled'].includes(final.status));
+  assert.equal((await e.call('/api/calendar?month=2026-10')).data.absences.length,final.status==='approved'?2:1);
+  audit = (await f.admin.call('/api/audit')).data.entries;
+  assert.equal(audit.filter((a)=>a.targetId===next.id && ['absence_request_approved','absence_request_cancelled'].includes(a.action)).length,1);
+});
+
+test('approval overlap and disabled-user guards leave pending requests unchanged without orphan absences', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const made = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-22',type:'vacation'})).data.request;
+  const absence = (await f.admin.call('/api/absences','POST',{userId:e.user.id,startDate:'2026-10-22',endDate:'2026-10-23',type:'other'})).data.absence;
+  assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'approved'})).status,409);
+  let pending = (await f.admin.call('/api/absence-requests')).data.requests.find((r)=>r.id===made.id);
+  assert.equal(pending.status,'pending'); assert.equal(pending.version,1); assert.equal(pending.absenceId,null);
+  assert.equal((await e.call('/api/calendar?month=2026-10')).data.absences.length,1);
+  assert.equal((await f.admin.call('/api/audit')).data.entries.filter((a)=>a.targetId===made.id && a.action==='absence_request_approved').length,0);
+  await f.admin.call('/api/absences/'+absence.id,'DELETE',{version:1});
+  await f.admin.call('/api/users/'+e.user.id,'PATCH',{active:false});
+  assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'approved'})).status,409);
+  pending = (await f.admin.call('/api/absence-requests')).data.requests.find((r)=>r.id===made.id);
+  assert.equal(pending.status,'pending'); assert.equal(pending.version,1);
+  assert.equal((await f.admin.call('/api/calendar?month=2026-10&userId='+e.user.id)).data.absences.length,0);
+  assert.equal((await f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'rejected',decisionNote:'Аккаунт отключён'})).status,200);
+});
+
+test('concurrent direct absence and request approval cannot create overlapping approved dates', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  const made = (await e.call('/api/absence-requests','POST',{startDate:'2026-10-20',endDate:'2026-10-22',type:'vacation'})).data.request;
+  const race = await Promise.all([
+    f.admin.call('/api/absence-requests/'+made.id,'PATCH',{version:1,status:'approved'}),
+    f.admin.call('/api/absences','POST',{userId:e.user.id,startDate:'2026-10-22',endDate:'2026-10-24',type:'day_off'}),
+  ]);
+  assert.equal(race.filter((r)=>r.status===409).length,1); assert.equal(race.filter((r)=>r.status===200 || r.status===201).length,1);
+  const calendar = (await e.call('/api/calendar?month=2026-10')).data; assert.equal(calendar.absences.length,1);
+  const final = (await e.call('/api/absence-requests')).data.requests[0];
+  assert.equal(final.status,race[0].status===200?'approved':'pending');
+});
+
+test('persisted version-two SQLite preserves absences while adding requests and supports SET NULL history', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(),'smena-v2-upgrade-')); const file = join(directory,'version-two.sqlite');
+  t.after(() => {
+    const target = resolve(directory); assert.ok(target.startsWith(resolve(tmpdir())+sep) && target.includes('smena-v2-upgrade-'));
+    rmSync(target,{recursive:true,force:true});
+  });
+  const before = createSqliteDatabase(file,{initialize:false});
+  for (const name of ['0000_ordinary_mephistopheles.sql','0001_nice_wendell_vaughn.sql'])
+    before.executeScript(readFileSync(new URL('../drizzle/'+name,import.meta.url),'utf8'));
+  before.executeScript('PRAGMA user_version=2');
+  await before.prepare('INSERT INTO users (id,username,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)')
+    .bind('preserved-user','preserved','Сотрудник','stored-hash','employee',1).run();
+  await before.prepare('INSERT INTO absences (id,user_id,start_date,end_date,type,note,created_at,version) VALUES (?,?,?,?,?,?,?,?)')
+    .bind('preserved-absence','preserved-user','2026-10-20','2026-10-21','vacation','Существующий отпуск',2,1).run();
+  before.close();
+  const upgraded = createSqliteDatabase(file);
+  assert.equal((await upgraded.prepare('PRAGMA user_version').first()).user_version,3);
+  assert.equal((await upgraded.prepare('SELECT note FROM absences').first()).note,'Существующий отпуск');
+  assert.equal((await upgraded.prepare('SELECT password_hash FROM users').first()).password_hash,'stored-hash');
+  assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM absence_requests').first()).count,0);
+  await upgraded.prepare('INSERT INTO absence_requests (id,user_id,start_date,end_date,type,status,created_at,absence_id) VALUES (?,?,?,?,?,?,?,?)')
+    .bind('preserved-request','preserved-user','2026-10-20','2026-10-21','vacation','approved',3,'preserved-absence').run();
+  await upgraded.prepare('DELETE FROM absences WHERE id=?').bind('preserved-absence').run();
+  const history = await upgraded.prepare('SELECT status,absence_id FROM absence_requests').first();
+  assert.equal(history.status,'approved'); assert.equal(history.absence_id,null);
   upgraded.close();
 });

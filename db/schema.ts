@@ -59,3 +59,18 @@ export const absences = sqliteTable('absences', {
 }, (t) => [index('absences_user_dates').on(t.userId, t.startDate, t.endDate),
   check('absences_type_check', sql`${t.type} IN ('vacation', 'day_off', 'other')`),
   check('absences_date_check', sql`${t.endDate} >= ${t.startDate}`)]);
+
+export const absenceRequests = sqliteTable('absence_requests', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull().references(() => users.id),
+  startDate: text('start_date').notNull(), endDate: text('end_date').notNull(), type: text('type').notNull(),
+  note: text('note').notNull().default(''), status: text('status').notNull().default('pending'),
+  createdAt: integer('created_at').notNull(), decidedAt: integer('decided_at'),
+  decidedBy: text('decided_by').references(() => users.id, { onDelete: 'set null' }),
+  decisionNote: text('decision_note').notNull().default(''),
+  absenceId: text('absence_id').references(() => absences.id, { onDelete: 'set null' }),
+  version: integer('version').notNull().default(1),
+}, (t) => [index('absence_requests_user_status_dates').on(t.userId, t.status, t.startDate, t.endDate),
+  index('absence_requests_status_created').on(t.status, t.createdAt),
+  check('absence_requests_type_check', sql`${t.type} IN ('vacation', 'day_off')`),
+  check('absence_requests_status_check', sql`${t.status} IN ('pending', 'approved', 'rejected', 'cancelled')`),
+  check('absence_requests_date_check', sql`${t.endDate} >= ${t.startDate}`)]);

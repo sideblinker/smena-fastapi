@@ -414,6 +414,8 @@ async function route(request, context) {
     const entries = await rows(db, 'SELECT * FROM audit_log ORDER BY created_at DESC,id DESC LIMIT 300');
     return response({ entries: entries.map((e) => ({ id: e.id, actorName: e.actor_name, action: e.action, targetType: e.target_type, targetId: e.target_id, details: JSON.parse(e.details), createdAt: e.created_at })) });
   }
+  if (path === '/api/absence-requests' || /^\/api\/absence-requests\/[^/]+(?:\/cancel)?$/.test(path))
+    return routeAbsenceRequests(request, context, actor, url, path, method, now);
   if (['/api/calendar','/api/team-status','/api/timesheet','/api/absences'].includes(path) || /^\/api\/absences\/[^/]+$/.test(path))
     return routeAttendance(request, context, actor, url, path, method, now);
   return routeTime(request, context, actor, url, path, method, now);
@@ -547,6 +549,106 @@ function attendanceMonth(value, now) {
 function absencePublic(a) {
   return { id: a.id, userId: a.user_id, startDate: a.start_date, endDate: a.end_date, type: a.type,
     note: a.note, createdAt: a.created_at, version: a.version };
+}
+const REQUEST_SELECT = `SELECT ar.*,u.name AS owner_name,u.department AS owner_department,u.position AS owner_position,
+  u.active AS owner_active,u.archived AS owner_archived,d.name AS decider_name FROM absence_requests ar
+  JOIN users u ON u.id=ar.user_id LEFT JOIN users d ON d.id=ar.decided_by`;
+function absenceRequestPublic(r) {
+  return { id: r.id, userId: r.user_id, user: { id: r.user_id, name: r.owner_name, department: r.owner_department, position: r.owner_position },
+    startDate: r.start_date, endDate: r.end_date, type: r.type, note: r.note, status: r.status, createdAt: r.created_at,
+    decidedAt: r.decided_at, decidedBy: r.decided_by ? { id: r.decided_by, name: r.decider_name } : null,
+    decisionNote: r.decision_note, absenceId: r.absence_id, version: r.version };
+}
+async function absenceRequestRow(db, id) {
+  const current = await first(db, REQUEST_SELECT + ' WHERE ar.id=?', idField(id));
+  if (!current) fail(404, 'NOT_FOUND', 'Заявка не найдена.');
+  return current;
+}
+async function routeAbsenceRequests(request, context, actor, url, path, method, now) {
+  const { db } = context;
+  if (path === '/api/absence-requests' && method === 'GET') {
+    const status = url.searchParams.get('status') || 'all';
+    if (!['all','pending','approved','rejected','cancelled'].includes(status)) fail(400, 'VALIDATION', 'Неизвестный статус заявки.');
+    // One read keeps the filter-independent counts and displayed requests coherent.
+    const selected = await rows(db, REQUEST_SELECT + (actor.user.role === 'admin' ? '' : ' WHERE ar.user_id=?')
+      + ' ORDER BY ar.created_at DESC,ar.id DESC', ...(actor.user.role === 'admin' ? [] : [actor.user.id]));
+    const counts = { pending: 0, approved: 0, rejected: 0, cancelled: 0 };
+    for (const row of selected) counts[row.status]++;
+    return response({ requests: selected.filter((r) => status === 'all' || r.status === status).map(absenceRequestPublic), counts, serverNow: now });
+  }
+  if (path === '/api/absence-requests' && method === 'POST') {
+    const body = await bodyJson(request); rejectUnknown(body, ['startDate','endDate','type','note']);
+    const range = absenceRange(body.startDate, body.endDate);
+    if (!['vacation','day_off'].includes(body.type)) fail(400, 'VALIDATION', 'В заявке можно выбрать только отпуск или отгул.');
+    const note = textField(body.note ?? '', 'Примечание', 2000, true); const id = randomUUID();
+    const result = await db.batch([
+      stmt(db, `INSERT INTO absence_requests (id,user_id,start_date,end_date,type,note,status,created_at,version)
+        SELECT ?,?,?,?,?,?,'pending',?,1 WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND active=1 AND archived=0)
+        AND NOT EXISTS(SELECT 1 FROM absence_requests WHERE user_id=? AND status='pending' AND start_date<=? AND end_date>=?)
+        AND NOT EXISTS(SELECT 1 FROM absences WHERE user_id=? AND start_date<=? AND end_date>=?)`,
+      id, actor.user.id, range.startDate, range.endDate, body.type, note, now, actor.user.id,
+      actor.user.id, range.endDate, range.startDate, actor.user.id, range.endDate, range.startDate),
+      auditStatement(db, actor, 'absence_request_created', 'absence_request', id,
+        { userId: actor.user.id, ...range, type: body.type, note }, now, { sql: 'EXISTS(SELECT 1 FROM absence_requests WHERE id=?)', args: [id] }),
+    ]);
+    if (!changed(result[0])) fail(409, 'REQUEST_OVERLAP', 'Период пересекается с ожидающей заявкой или отсутствием, либо аккаунт недоступен.');
+    return response({ request: absenceRequestPublic(await absenceRequestRow(db, id)) }, 201);
+  }
+  const decision = path.match(/^\/api\/absence-requests\/([^/]+)$/);
+  if (decision && method === 'PATCH') {
+    requireAdmin(actor);
+    const body = await bodyJson(request); rejectUnknown(body, ['version','status','decisionNote']);
+    const version = versionField(body.version);
+    if (!['approved','rejected'].includes(body.status)) fail(400, 'VALIDATION', 'Администратор может одобрить или отклонить заявку.');
+    const decisionNote = textField(body.decisionNote ?? '', 'Комментарий к решению', 500, true);
+    if (body.status === 'rejected' && decisionNote.length < 3) fail(400, 'VALIDATION', 'Укажите причину отказа: от 3 до 500 символов.');
+    const current = await absenceRequestRow(db, decision[1]);
+    if (current.status !== 'pending' || current.version !== version) fail(409, 'REQUEST_CONFLICT', 'Заявка уже рассмотрена, отменена или изменена. Обновите данные.');
+    if (body.status === 'approved') {
+      if (!current.owner_active || current.owner_archived) fail(409, 'INACTIVE_USER', 'Нельзя одобрить заявку отключённого или архивного сотрудника.');
+      const absenceId = randomUUID();
+      // The guarded insert is the approval's gate. Every later statement depends
+      // on this exact new absence, so a failed overlap/CAS check resolves nothing.
+      const results = await db.batch([
+        stmt(db, `INSERT INTO absences (id,user_id,start_date,end_date,type,note,created_at,version)
+          SELECT ?,ar.user_id,ar.start_date,ar.end_date,ar.type,ar.note,?,1 FROM absence_requests ar JOIN users u ON u.id=ar.user_id
+          WHERE ar.id=? AND ar.status='pending' AND ar.version=? AND u.active=1 AND u.archived=0
+          AND NOT EXISTS(SELECT 1 FROM absences a WHERE a.user_id=ar.user_id AND a.start_date<=ar.end_date AND a.end_date>=ar.start_date)`,
+        absenceId, now, current.id, version),
+        stmt(db, `UPDATE absence_requests SET status='approved',decided_at=?,decided_by=?,decision_note=?,absence_id=?,version=version+1
+          WHERE id=? AND status='pending' AND version=? AND EXISTS(SELECT 1 FROM absences WHERE id=?)`,
+        now, actor.user.id, decisionNote, absenceId, current.id, version, absenceId),
+        auditStatement(db, actor, 'absence_request_approved', 'absence_request', current.id,
+          { userId: current.user_id, startDate: current.start_date, endDate: current.end_date, type: current.type, decisionNote, absenceId, previousVersion: version }, now,
+          { sql: "EXISTS(SELECT 1 FROM absence_requests WHERE id=? AND status='approved' AND absence_id=?)", args: [current.id, absenceId] }),
+      ]);
+      if (!changed(results[0]) || !changed(results[1])) fail(409, 'REQUEST_CONFLICT', 'Заявка уже изменена, сотрудник отключён или даты пересекаются с существующим отсутствием.');
+    } else {
+      const results = await db.batch([
+        stmt(db, `UPDATE absence_requests SET status='rejected',decided_at=?,decided_by=?,decision_note=?,version=version+1
+          WHERE id=? AND status='pending' AND version=?`, now, actor.user.id, decisionNote, current.id, version),
+        auditStatement(db, actor, 'absence_request_rejected', 'absence_request', current.id,
+          { userId: current.user_id, decisionNote, previousVersion: version }, now, { sql: 'changes() > 0', args: [] }),
+      ]);
+      if (!changed(results[0])) fail(409, 'REQUEST_CONFLICT', 'Заявка уже рассмотрена, отменена или изменена. Обновите данные.');
+    }
+    return response({ request: absenceRequestPublic(await absenceRequestRow(db, current.id)) });
+  }
+  const cancellation = path.match(/^\/api\/absence-requests\/([^/]+)\/cancel$/);
+  if (cancellation && method === 'POST') {
+    const current = await absenceRequestRow(db, cancellation[1]);
+    if (current.user_id !== actor.user.id) fail(403, 'FORBIDDEN', 'Отменить заявку может только её автор.');
+    const body = await bodyJson(request); rejectUnknown(body, ['version']); const version = versionField(body.version);
+    const results = await db.batch([
+      stmt(db, `UPDATE absence_requests SET status='cancelled',decided_at=?,decided_by=?,decision_note='',version=version+1
+        WHERE id=? AND user_id=? AND status='pending' AND version=?`, now, actor.user.id, current.id, actor.user.id, version),
+      auditStatement(db, actor, 'absence_request_cancelled', 'absence_request', current.id,
+        { userId: current.user_id, previousVersion: version }, now, { sql: 'changes() > 0', args: [] }),
+    ]);
+    if (!changed(results[0])) fail(409, 'REQUEST_CONFLICT', 'Отменить можно только свою ожидающую заявку актуальной версии.');
+    return response({ request: absenceRequestPublic(await absenceRequestRow(db, current.id)) });
+  }
+  fail(404, 'NOT_FOUND', 'Адрес API не найден.');
 }
 function groupByUser(list, key) {
   const map = new Map();

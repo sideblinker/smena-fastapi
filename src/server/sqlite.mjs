@@ -10,17 +10,23 @@ export function createSqliteDatabase(filename, { initialize = true, schemaPath }
   connection.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   if (filename !== ':memory:') connection.exec('PRAGMA journal_mode = WAL;');
   const version = Number(connection.prepare('PRAGMA user_version').get().user_version);
-  if (initialize && version < 2) {
+  if (initialize && version < 3) {
     connection.exec('BEGIN IMMEDIATE');
     try {
       // Another process may have completed migration while this connection waited
       // for the write lock. Decide against the version inside this transaction.
       const lockedVersion = Number(connection.prepare('PRAGMA user_version').get().user_version);
-      if (lockedVersion < 2) {
-        const schema = lockedVersion === 0
-          ? readFileSync(schemaPath || fileURLToPath(new URL('../../db/schema.sql', import.meta.url)), 'utf8')
-          : readFileSync(fileURLToPath(new URL('../../drizzle/0001_nice_wendell_vaughn.sql', import.meta.url)), 'utf8');
-        connection.exec(schema); connection.exec('PRAGMA user_version = 2');
+      if (lockedVersion < 3) {
+        if (lockedVersion === 0) {
+          connection.exec(readFileSync(schemaPath || fileURLToPath(new URL('../../db/schema.sql', import.meta.url)), 'utf8'));
+        } else {
+          for (const migration of [
+            { version: 2, file: '0001_nice_wendell_vaughn.sql' },
+            { version: 3, file: '0002_faithful_puma.sql' },
+          ]) if (lockedVersion < migration.version)
+            connection.exec(readFileSync(fileURLToPath(new URL('../../drizzle/' + migration.file, import.meta.url)), 'utf8'));
+        }
+        connection.exec('PRAGMA user_version = 3');
       }
       connection.exec('COMMIT');
     } catch (error) { connection.exec('ROLLBACK'); connection.close(); throw error; }
