@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
+import { buildAttendanceMonth, monthBounds } from './attendance.mjs';
 
 const ALL_PERMISSIONS = ['track_time', 'edit_own_profile', 'edit_own_shifts', 'view_reports', 'export_reports'];
 const DEFAULT_PERMISSIONS = ['track_time', 'edit_own_profile', 'view_reports'];
@@ -106,12 +107,26 @@ function exactOrigin(request) {
     fail(403, 'ORIGIN', 'Запрос отклонён: источник не совпадает с адресом сайта.');
 }
 async function publicUser(db, user) {
+  const permissions = user.role === 'admin' ? ALL_PERMISSIONS : (await rows(db, 'SELECT permission FROM user_permissions WHERE user_id = ? ORDER BY permission', user.id)).map((p) => p.permission);
+  return userPublic(user, permissions);
+}
+function userPublic(user, permissions) {
   return {
     id: user.id, username: user.username, name: user.name, position: user.position, department: user.department,
     role: user.role, active: !!user.active, archived: !!user.archived,
-    permissions: user.role === 'admin' ? ALL_PERMISSIONS : (await rows(db, 'SELECT permission FROM user_permissions WHERE user_id = ? ORDER BY permission', user.id)).map((p) => p.permission),
+    permissions: user.role === 'admin' ? ALL_PERMISSIONS : permissions,
     createdAt: user.created_at,
   };
+}
+async function publicUsers(db, list) {
+  if (list.length === 1) return [await publicUser(db, list[0])];
+  const assigned = await rows(db, 'SELECT user_id,permission FROM user_permissions ORDER BY permission');
+  const permissions = new Map();
+  for (const p of assigned) {
+    if (!permissions.has(p.user_id)) permissions.set(p.user_id, []);
+    permissions.get(p.user_id).push(p.permission);
+  }
+  return list.map((u) => userPublic(u, permissions.get(u.id) || []));
 }
 async function userRow(db, id) {
   const user = await first(db, 'SELECT * FROM users WHERE id = ?', idField(id));
@@ -163,6 +178,9 @@ async function sessionPayload(db, user, csrf, now) {
 }
 async function getSchedule(db, userId) {
   const s = await first(db, 'SELECT * FROM schedules WHERE user_id = ?', userId);
+  return schedulePublic(s, userId);
+}
+function schedulePublic(s, userId) {
   return s ? { userId, startTime: s.start_time, endTime: s.end_time, breakMinutes: s.break_minutes, weekdays: JSON.parse(s.weekdays), timezone: s.timezone }
     : { userId, startTime: '09:00', endTime: '18:00', breakMinutes: 60, weekdays: [1,2,3,4,5], timezone: 'Asia/Qyzylorda' };
 }
@@ -294,7 +312,7 @@ async function route(request, context) {
   if (path === '/api/users' && method === 'GET') {
     requireAdmin(actor);
     const list = await rows(db, `SELECT * FROM users ${url.searchParams.get('includeArchived') === '1' ? '' : 'WHERE archived = 0'} ORDER BY master DESC,name`);
-    return response({ users: await Promise.all(list.map((u) => publicUser(db, u))) });
+    return response({ users: await publicUsers(db, list) });
   }
   if (path === '/api/users' && method === 'POST') {
     requireAdmin(actor);
@@ -396,6 +414,8 @@ async function route(request, context) {
     const entries = await rows(db, 'SELECT * FROM audit_log ORDER BY created_at DESC,id DESC LIMIT 300');
     return response({ entries: entries.map((e) => ({ id: e.id, actorName: e.actor_name, action: e.action, targetType: e.target_type, targetId: e.target_id, details: JSON.parse(e.details), createdAt: e.created_at })) });
   }
+  if (['/api/calendar','/api/team-status','/api/timesheet','/api/absences'].includes(path) || /^\/api\/absences\/[^/]+$/.test(path))
+    return routeAttendance(request, context, actor, url, path, method, now);
   return routeTime(request, context, actor, url, path, method, now);
 }
 
@@ -474,10 +494,13 @@ async function routeTime(request, context, actor, url, path, method, now) {
       if (!changed(results[0])) fail(409, 'VERSION_CONFLICT', 'Смена уже изменена в другом окне. Обновите данные.');
       return response({ ok: true });
     }
-    rejectUnknown(body, ['startedAt','endedAt','breaks','note','version']);
+    rejectUnknown(body, ['startedAt','endedAt','breaks','note','version','reason']);
+    const reason = textField(body.reason, 'Причина изменения', 500);
+    if (reason.length < 3) fail(400, 'VALIDATION', 'Укажите причину изменения: от 3 до 500 символов.');
     const version = versionField(body.version);
     if (version !== s.version) fail(409, 'VERSION_CONFLICT', 'Смена уже изменена в другом окне. Обновите данные.');
     const current = await publicShift(db, s);
+    if (current.version !== version) fail(409, 'VERSION_CONFLICT', 'Смена уже изменена в другом окне. Обновите данные.');
     const values = shiftFields({ ...current, ...body }, now); const revision = token();
     const results = await db.batch([
       stmt(db, `UPDATE shifts SET started_at=?,ended_at=?,note=?,version=version+1,revision_token=?
@@ -486,7 +509,9 @@ async function routeTime(request, context, actor, url, path, method, now) {
       values.startedAt, values.endedAt, values.note, revision, s.id, version, s.user_id, s.id, values.endedAt ?? MAX_TIME, MAX_TIME, values.startedAt),
       stmt(db, 'DELETE FROM breaks WHERE shift_id=? AND EXISTS(SELECT 1 FROM shifts WHERE id=? AND revision_token=?)', s.id, s.id, revision),
       ...breakInserts(db, s.id, revision, values.breaks),
-      auditStatement(db, actor, 'shift_updated', 'shift', s.id, { userId: s.user_id, ...values, previousVersion: version }, now, revisionGuard(s.id, revision)),
+      auditStatement(db, actor, 'shift_updated', 'shift', s.id, { userId: s.user_id, reason,
+        before: { startedAt: current.startedAt, endedAt: current.endedAt, breaks: current.breaks, note: current.note },
+        after: values, previousVersion: version }, now, revisionGuard(s.id, revision)),
     ]);
     if (!changed(results[0])) fail(409, 'SHIFT_CONFLICT', 'Смена изменена в другом окне или пересекается с другой сменой. Обновите данные.');
     return response({ shift: await publicShift(db, await shiftRow(db, s.id)) });
@@ -509,6 +534,131 @@ async function routeTime(request, context, actor, url, path, method, now) {
     await audit(db, actor, 'report_exported', 'user', userId, { from: report.days[0]?.date, to: report.days.at(-1)?.date }, now);
     return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': 'attachment; filename="smena-report.csv"', 'Cache-Control': 'no-store' } });
+  }
+  fail(404, 'NOT_FOUND', 'Адрес API не найден.');
+}
+
+function attendanceMonth(value, now) {
+  const month = value || localDay(now, 'Asia/Qyzylorda').slice(0,7);
+  let bounds;
+  try { bounds = monthBounds(month); } catch { fail(400, 'VALIDATION', 'Месяц должен быть в формате ГГГГ-ММ.'); }
+  return { month, ...bounds, firstDate: month + '-01', lastDate: localDay(bounds.to - 1, 'Asia/Qyzylorda') };
+}
+function absencePublic(a) {
+  return { id: a.id, userId: a.user_id, startDate: a.start_date, endDate: a.end_date, type: a.type,
+    note: a.note, createdAt: a.created_at, version: a.version };
+}
+function groupByUser(list, key) {
+  const map = new Map();
+  for (const entry of list) {
+    const userId = entry[key];
+    if (!map.has(userId)) map.set(userId, []);
+    map.get(userId).push(entry);
+  }
+  return map;
+}
+async function attendanceInputs(db, period, userId, includeActive = false) {
+  const params = userId ? [userId] : [];
+  const [scheduleRows, shiftRows, absenceRows] = await Promise.all([
+    rows(db, 'SELECT * FROM schedules' + (userId ? ' WHERE user_id=?' : ''), ...params),
+    rows(db, SHIFT_SELECT + ` WHERE ((started_at>=? AND started_at<?)${includeActive ? ' OR ended_at IS NULL' : ''})`
+      + (userId ? ' AND user_id=?' : '') + ' ORDER BY started_at', period.from, period.to, ...params),
+    rows(db, 'SELECT * FROM absences WHERE start_date<=? AND end_date>=?' + (userId ? ' AND user_id=?' : '') + ' ORDER BY start_date,id',
+      period.lastDate, period.firstDate, ...params),
+  ]);
+  const schedules = new Map(scheduleRows.map((s) => [s.user_id, s]));
+  const shifts = groupByUser(shiftRows.map(shiftPublic), 'userId');
+  const absences = groupByUser(absenceRows.map(absencePublic), 'userId');
+  return (id) => ({ schedule: schedulePublic(schedules.get(id), id), shifts: shifts.get(id) || [], absences: absences.get(id) || [] });
+}
+function absenceRange(from, to) {
+  const startDate = validDate(from); const endDate = validDate(to);
+  const count = (Date.parse(endDate + 'T00:00:00Z') - Date.parse(startDate + 'T00:00:00Z')) / DAY + 1;
+  if (count < 1 || count > 366) fail(400, 'VALIDATION', 'Период отсутствия должен составлять от 1 до 366 дней.');
+  return { startDate, endDate };
+}
+async function routeAttendance(request, context, actor, url, path, method, now) {
+  const { db } = context;
+  if (method === 'GET' && path === '/api/calendar') {
+    const userId = url.searchParams.get('userId') || actor.user.id; requireOwn(actor, userId);
+    const user = await userRow(db, userId); const period = attendanceMonth(url.searchParams.get('month'), now);
+    const inputs = (await attendanceInputs(db, period, userId))(userId);
+    const days = buildAttendanceMonth({ month: period.month, ...inputs, now, createdAt: user.created_at });
+    return response({ user: await publicUser(db, user), schedule: inputs.schedule, month: period.month, days,
+      shifts: inputs.shifts, absences: inputs.absences, serverNow: now });
+  }
+  if (method === 'GET' && path === '/api/team-status') {
+    requireAdmin(actor);
+    const period = attendanceMonth(null, now); const today = localDay(now, 'Asia/Qyzylorda');
+    const list = await rows(db, 'SELECT * FROM users WHERE active=1 AND archived=0 ORDER BY master DESC,name');
+    const [getInputs, users] = await Promise.all([attendanceInputs(db, period, null, true), publicUsers(db, list)]);
+    const members = users.map((user) => {
+      const inputs = getInputs(user.id);
+      const day = buildAttendanceMonth({ month: period.month, ...inputs, now, createdAt: user.createdAt }).find((d) => d.date === today);
+      const activeShift = inputs.shifts.find((s) => s.endedAt === null) || null;
+      const status = activeShift ? activeShift.breaks.some((b) => b.endedAt === null) ? 'break' : 'working'
+        : day.shiftIds.length ? 'finished' : day.kind === 'absence' ? 'absence' : day.kind === 'day_off' ? 'day_off' : 'not_started';
+      return { user, status, activeShift, day };
+    });
+    return response({ members, serverNow: now });
+  }
+  if (method === 'GET' && path === '/api/timesheet') {
+    requirePermission(actor, 'view_reports');
+    const userId = url.searchParams.get('userId') || actor.user.id;
+    const period = attendanceMonth(url.searchParams.get('month'), now);
+    let list;
+    if (userId === 'all') {
+      requireAdmin(actor);
+      list = await rows(db, `SELECT * FROM users u WHERE archived=0
+        OR EXISTS(SELECT 1 FROM shifts s WHERE s.user_id=u.id AND s.started_at>=? AND s.started_at<?)
+        OR EXISTS(SELECT 1 FROM absences a WHERE a.user_id=u.id AND a.start_date<=? AND a.end_date>=?) ORDER BY master DESC,name`,
+      period.from, period.to, period.lastDate, period.firstDate);
+    } else { requireOwn(actor, userId); list = [await userRow(db, userId)]; }
+    const [getInputs, users] = await Promise.all([attendanceInputs(db, period, userId === 'all' ? null : userId), publicUsers(db, list)]);
+    const reportRows = users.map((user) => {
+      const days = buildAttendanceMonth({ month: period.month, ...getInputs(user.id), now, createdAt: user.createdAt });
+      const totals = Object.fromEntries(['plannedMs','workMs','breakMs','lateMs','overtimeMs'].map((key) => [key, days.reduce((sum,day) => sum + day[key], 0)]));
+      return { user, days, ...totals };
+    });
+    const dates = reportRows[0]?.days.map((day) => day.date) || buildAttendanceMonth({ month: period.month,
+      schedule: schedulePublic(null, ''), shifts: [], absences: [], now }).map((day) => day.date);
+    return response({ month: period.month, days: dates, rows: reportRows, serverNow: now });
+  }
+  if (method === 'GET' && path === '/api/absences') {
+    const userId = url.searchParams.get('userId') || actor.user.id; requireOwn(actor, userId); await userRow(db, userId);
+    const period = attendanceMonth(null, now);
+    const range = absenceRange(url.searchParams.get('from') || period.firstDate, url.searchParams.get('to') || period.lastDate);
+    const selected = await rows(db, 'SELECT * FROM absences WHERE user_id=? AND start_date<=? AND end_date>=? ORDER BY start_date,id',
+      userId, range.endDate, range.startDate);
+    return response({ absences: selected.map(absencePublic), serverNow: now });
+  }
+  if (method === 'POST' && path === '/api/absences') {
+    requireAdmin(actor);
+    const body = await bodyJson(request); rejectUnknown(body, ['userId','startDate','endDate','type','note']);
+    const userId = idField(body.userId); await userRow(db, userId);
+    const range = absenceRange(body.startDate, body.endDate);
+    if (!['vacation','day_off','other'].includes(body.type)) fail(400, 'VALIDATION', 'Выберите тип отсутствия: отпуск, выходной или другое.');
+    const note = textField(body.note ?? '', 'Примечание', 2000, true); const id = randomUUID();
+    const result = await db.batch([
+      stmt(db, `INSERT INTO absences (id,user_id,start_date,end_date,type,note,created_at,version)
+        SELECT ?,?,?,?,?,?,?,1 WHERE NOT EXISTS(SELECT 1 FROM absences WHERE user_id=? AND start_date<=? AND end_date>=?)`,
+      id, userId, range.startDate, range.endDate, body.type, note, now, userId, range.endDate, range.startDate),
+      auditStatement(db, actor, 'absence_created', 'absence', id, { userId, ...range, type: body.type, note }, now,
+        { sql: 'EXISTS(SELECT 1 FROM absences WHERE id=?)', args: [id] }),
+    ]);
+    if (!changed(result[0])) fail(409, 'ABSENCE_OVERLAP', 'Выбранный период пересекается с другим отсутствием сотрудника.');
+    return response({ absence: absencePublic(await first(db, 'SELECT * FROM absences WHERE id=?', id)) }, 201);
+  }
+  const absenceMatch = path.match(/^\/api\/absences\/([^/]+)$/);
+  if (method === 'DELETE' && absenceMatch) {
+    requireAdmin(actor); const id = idField(absenceMatch[1]);
+    const current = await first(db, 'SELECT * FROM absences WHERE id=?', id);
+    if (!current) fail(404, 'NOT_FOUND', 'Отсутствие не найдено.');
+    const body = await bodyJson(request); rejectUnknown(body, ['version']); const version = versionField(body.version);
+    const results = await db.batch([stmt(db, 'DELETE FROM absences WHERE id=? AND version=?', id, version),
+      auditStatement(db, actor, 'absence_deleted', 'absence', id, absencePublic(current), now, { sql: 'changes() > 0', args: [] })]);
+    if (!changed(results[0])) fail(409, 'VERSION_CONFLICT', 'Отсутствие уже изменено. Обновите данные.');
+    return response({ ok: true });
   }
   fail(404, 'NOT_FOUND', 'Адрес API не найден.');
 }

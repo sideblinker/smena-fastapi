@@ -9,11 +9,20 @@ export function createSqliteDatabase(filename, { initialize = true, schemaPath }
   const connection = new DatabaseSync(filename);
   connection.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   if (filename !== ':memory:') connection.exec('PRAGMA journal_mode = WAL;');
-  if (initialize && connection.prepare('PRAGMA user_version').get().user_version === 0) {
-    const schema = readFileSync(schemaPath || fileURLToPath(new URL('../../db/schema.sql', import.meta.url)), 'utf8');
+  const version = Number(connection.prepare('PRAGMA user_version').get().user_version);
+  if (initialize && version < 2) {
     connection.exec('BEGIN IMMEDIATE');
     try {
-      connection.exec(schema); connection.exec('PRAGMA user_version = 1'); connection.exec('COMMIT');
+      // Another process may have completed migration while this connection waited
+      // for the write lock. Decide against the version inside this transaction.
+      const lockedVersion = Number(connection.prepare('PRAGMA user_version').get().user_version);
+      if (lockedVersion < 2) {
+        const schema = lockedVersion === 0
+          ? readFileSync(schemaPath || fileURLToPath(new URL('../../db/schema.sql', import.meta.url)), 'utf8')
+          : readFileSync(fileURLToPath(new URL('../../drizzle/0001_nice_wendell_vaughn.sql', import.meta.url)), 'utf8');
+        connection.exec(schema); connection.exec('PRAGMA user_version = 2');
+      }
+      connection.exec('COMMIT');
     } catch (error) { connection.exec('ROLLBACK'); connection.close(); throw error; }
   }
   class Statement {

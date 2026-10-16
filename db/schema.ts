@@ -51,3 +51,11 @@ export const auditLog = sqliteTable('audit_log', {
   action: text('action').notNull(), targetType: text('target_type').notNull(), targetId: text('target_id').notNull(),
   details: text('details').notNull().default('{}'), createdAt: integer('created_at').notNull(),
 }, (t) => [index('audit_log_time').on(t.createdAt)]);
+
+export const absences = sqliteTable('absences', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull().references(() => users.id),
+  startDate: text('start_date').notNull(), endDate: text('end_date').notNull(), type: text('type').notNull(),
+  note: text('note').notNull().default(''), createdAt: integer('created_at').notNull(), version: integer('version').notNull().default(1),
+}, (t) => [index('absences_user_dates').on(t.userId, t.startDate, t.endDate),
+  check('absences_type_check', sql`${t.type} IN ('vacation', 'day_off', 'other')`),
+  check('absences_date_check', sql`${t.endDate} >= ${t.startDate}`)]);

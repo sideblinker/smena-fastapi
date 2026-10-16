@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import { createSqliteDatabase } from '../src/server/sqlite.mjs';
 import { handleApi } from '../src/server/service.mjs';
 
@@ -193,7 +196,7 @@ test('an employee without optional permissions can edit own shift times and brea
   const changes = {
     version:added.data.shift.version,startedAt:start-0.5*HOUR,endedAt:start+4.5*HOUR,
     breaks:[{startedAt:start+HOUR,endedAt:start+1.25*HOUR},{startedAt:start+3*HOUR,endedAt:start+3.5*HOUR}],
-    note:'Исправлено сотрудником',
+    note:'Исправлено сотрудником',reason:'Уточнение отметок рабочего дня',
   };
   const edited = await employee.call('/api/shifts/'+id,'PATCH',changes);
   assert.equal(edited.status,200,JSON.stringify(edited.data));
@@ -245,7 +248,7 @@ test('shift editing always uses stored ownership, rejects owner tampering and al
   for (const employee of [alice,boris]) {
     const own = shifts.get(employee.user.id);
     const changes = {version:own.version,startedAt:f.now-5*HOUR,endedAt:f.now-0.5*HOUR,
-      breaks:[{startedAt:f.now-3*HOUR,endedAt:f.now-2*HOUR}],note:'Admin edit'};
+      breaks:[{startedAt:f.now-3*HOUR,endedAt:f.now-2*HOUR}],note:'Admin edit',reason:'Уточнение по заявлению сотрудника'};
     const edited = await f.admin.call('/api/shifts/'+own.id,'PATCH',changes);
     assert.equal(edited.status,200,JSON.stringify(edited.data));
     assert.equal(edited.data.shift.userId,employee.user.id);
@@ -261,8 +264,8 @@ test('concurrent shift edit uses compare-and-swap and does not overwrite winning
   const added = await f.admin.call('/api/shifts','POST',{userId:f.adminUser.id,startedAt:start,endedAt:start+4*HOUR,breaks:[]});
   const id = added.data.shift.id;
   const results = await Promise.all([
-    f.admin.call('/api/shifts/'+id,'PATCH',{version:1,note:'A',breaks:[{startedAt:start+HOUR,endedAt:start+2*HOUR}]}),
-    f.admin.call('/api/shifts/'+id,'PATCH',{version:1,note:'B',breaks:[{startedAt:start+2*HOUR,endedAt:start+3*HOUR}]}),
+    f.admin.call('/api/shifts/'+id,'PATCH',{version:1,note:'A',reason:'Исправление A',breaks:[{startedAt:start+HOUR,endedAt:start+2*HOUR}]}),
+    f.admin.call('/api/shifts/'+id,'PATCH',{version:1,note:'B',reason:'Исправление B',breaks:[{startedAt:start+2*HOUR,endedAt:start+3*HOUR}]}),
   ]);
   assert.deepEqual(results.map((r)=>r.status).sort(),[200,409]);
   const winner = results.find((r)=>r.status===200).data.shift;
@@ -371,4 +374,148 @@ test('stale password change cannot overwrite an admin reset or revoke the replac
   gate.release();
   assert.equal((await pending).status,409);
   assert.equal((await replacement.call('/api/dashboard')).status,200);
+});
+
+test('personal calendar is baseline access; timesheets retain report permission and ownership boundaries', async (t) => {
+  const f = await fixture(t); const e = await f.employee('calendar_person', []);
+  let result = await e.call('/api/calendar?month=2026-10');
+  assert.equal(result.status,200,JSON.stringify(result.data)); assert.equal(result.data.month,'2026-10');
+  assert.equal(result.data.days.length,31); assert.equal(result.data.days[0].date,'2026-10-01');
+  assert.equal(result.data.user.id,e.user.id); assert.equal(result.data.days[0].plannedMs,0);
+  assert.equal((await e.call('/api/calendar?month=2026-10&userId='+f.adminUser.id)).status,403);
+  assert.equal((await e.call('/api/team-status')).status,403);
+  assert.equal((await e.call('/api/timesheet?month=2026-10')).status,403);
+  for (const month of ['2026-13','2026-00','2026-1','2026-10-01','not-a-month'])
+    assert.equal((await e.call('/api/calendar?month='+month)).status,400);
+  assert.equal((await f.client().call('/api/calendar?month=2026-10')).status,401);
+  await f.admin.call('/api/users/'+e.user.id,'PATCH',{permissions:['view_reports']});
+  result = await e.call('/api/timesheet?month=2026-10');
+  assert.equal(result.status,200); assert.equal(result.data.days.length,31); assert.equal(result.data.rows.length,1);
+  assert.equal(result.data.rows[0].user.id,e.user.id);
+  assert.equal((await e.call('/api/timesheet?month=2026-10&userId=all')).status,403);
+  assert.equal((await e.call('/api/timesheet?month=2026-10&userId='+f.adminUser.id)).status,403);
+});
+
+test('absence CRUD is admin-only, validates real dates, rejects overlaps atomically and preserves actual time', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  await f.db.prepare('UPDATE users SET created_at=? WHERE id=?').bind(Date.parse('2026-10-01T00:00:00+05:00'),e.user.id).run();
+  const absence = {userId:e.user.id,startDate:'2026-10-15',endDate:'2026-10-16',type:'vacation',note:'Отпуск'};
+  assert.equal((await e.call('/api/absences','POST',absence)).status,403);
+  assert.equal((await f.admin.call('/api/absences','POST',absence,{'X-CSRF-Token':''})).status,403);
+  for (const override of [{startDate:'2026-02-30'}, {endDate:'2026-10-14'}, {endDate:'2028-10-16'}, {type:'sick'}, {userId:'bad'}])
+    assert.equal((await f.admin.call('/api/absences','POST',{...absence,...override})).status,400);
+  const concurrent = await Promise.all([f.admin.call('/api/absences','POST',absence), f.admin.call('/api/absences','POST',absence)]);
+  assert.deepEqual(concurrent.map((r)=>r.status).sort(),[201,409]);
+  const saved = concurrent.find((r)=>r.status===201).data.absence;
+  assert.equal(saved.version,1); assert.equal(saved.userId,e.user.id);
+  assert.equal((await f.admin.call('/api/absences','POST',{...absence,startDate:'2026-10-16',endDate:'2026-10-17'})).status,409);
+  assert.equal((await f.admin.call('/api/absences','POST',{...absence,startDate:'2026-10-17',endDate:'2026-10-17'})).status,201);
+  const start = Date.parse('2026-10-15T09:30:00+05:00');
+  assert.equal((await f.admin.call('/api/shifts','POST',{userId:e.user.id,startedAt:start,endedAt:start+2*HOUR,breaks:[]})).status,201);
+  const calendar = (await e.call('/api/calendar?month=2026-10')).data;
+  const day = calendar.days.find((d)=>d.date==='2026-10-15');
+  assert.equal(day.kind,'absence'); assert.equal(day.plannedMs,0); assert.equal(day.workMs,2*HOUR); assert.equal(calendar.absences.length,2);
+  const actualOnAbsence = (await f.admin.call('/api/team-status')).data.members.find((m)=>m.user.id===e.user.id);
+  assert.equal(actualOnAbsence.status,'finished'); assert.equal(actualOnAbsence.day.kind,'absence');
+  assert.equal((await e.call('/api/absences?from=2026-10-01&to=2026-10-31')).data.absences.length,2);
+  assert.equal((await e.call('/api/absences?userId='+f.adminUser.id)).status,403);
+  assert.equal((await e.call('/api/absences/'+saved.id,'DELETE',{version:1})).status,403);
+  assert.equal((await f.admin.call('/api/absences/'+saved.id,'DELETE',{version:2})).status,409);
+  assert.equal((await f.admin.call('/api/absences/'+saved.id,'DELETE',{version:1})).status,200);
+  const restored = (await e.call('/api/calendar?month=2026-10')).data.days.find((d)=>d.date==='2026-10-15');
+  assert.equal(restored.kind,'workday'); assert.equal(restored.plannedMs,8*HOUR); assert.equal(restored.workMs,2*HOUR);
+  const audit = (await f.admin.call('/api/audit')).data.entries;
+  assert.equal(audit.filter((a)=>a.targetId===saved.id && a.action==='absence_created').length,1);
+  assert.equal(audit.filter((a)=>a.targetId===saved.id && a.action==='absence_deleted').length,1);
+});
+
+test('team live status prioritizes a prior-month active shift over today absence and excludes inactive users', async (t) => {
+  const f = await fixture(t); const night = await f.employee('night'); const off = await f.employee('off');
+  await f.admin.call('/api/absences','POST',{userId:night.user.id,startDate:'2026-10-15',endDate:'2026-10-15',type:'day_off'});
+  const start = Date.parse('2026-09-30T23:00:00+05:00');
+  const added = await f.admin.call('/api/shifts','POST',{userId:night.user.id,startedAt:start,endedAt:null,breaks:[{startedAt:f.now-HOUR,endedAt:null}]});
+  assert.equal(added.status,201); const id = added.data.shift.id;
+  await f.admin.call('/api/schedules/'+off.user.id,'PUT',{startTime:'09:00',endTime:'18:00',breakMinutes:60,weekdays:[],timezone:'Asia/Qyzylorda'});
+  let team = (await f.admin.call('/api/team-status')).data.members;
+  let member = team.find((m)=>m.user.id===night.user.id);
+  assert.equal(member.status,'break'); assert.equal(member.day.kind,'absence'); assert.equal(member.activeShift.id,id);
+  assert.equal(team.find((m)=>m.user.id===off.user.id).status,'day_off');
+  assert.equal(team.find((m)=>m.user.id===f.adminUser.id).status,'not_started');
+  await f.admin.call('/api/shifts','POST',{userId:off.user.id,startedAt:f.now-2*HOUR,endedAt:f.now-HOUR,breaks:[]});
+  const actualOnDayOff = (await f.admin.call('/api/team-status')).data.members.find((m)=>m.user.id===off.user.id);
+  assert.equal(actualOnDayOff.status,'finished'); assert.equal(actualOnDayOff.day.kind,'day_off');
+  await night.call('/api/shifts/'+id+'/resume','POST',{});
+  team = (await f.admin.call('/api/team-status')).data.members;
+  assert.equal(team.find((m)=>m.user.id===night.user.id).status,'working');
+  await night.call('/api/shifts/'+id+'/finish','POST',{});
+  team = (await f.admin.call('/api/team-status')).data.members;
+  assert.equal(team.find((m)=>m.user.id===night.user.id).status,'absence');
+  await f.admin.call('/api/users/'+off.user.id,'PATCH',{active:false});
+  team = (await f.admin.call('/api/team-status')).data.members;
+  assert.equal(team.some((m)=>m.user.id===off.user.id),false);
+});
+
+test('month timesheet attributes a night shift wholly to its start day and includes archived factual rows', async (t) => {
+  const f = await fixture(t); const e = await f.employee();
+  await f.db.prepare('UPDATE users SET created_at=? WHERE id=?').bind(Date.parse('2026-09-01T00:00:00+05:00'),e.user.id).run();
+  const start = Date.parse('2026-09-30T23:00:00+05:00');
+  await f.admin.call('/api/shifts','POST',{userId:e.user.id,startedAt:start,endedAt:start+4*HOUR,breaks:[{startedAt:start+HOUR,endedAt:start+1.5*HOUR}]});
+  await f.admin.call('/api/users/'+e.user.id,'DELETE');
+  const september = await f.admin.call('/api/timesheet?month=2026-09&userId=all');
+  assert.equal(september.status,200); assert.equal(september.data.days.length,30);
+  const row = september.data.rows.find((r)=>r.user.id===e.user.id);
+  assert.ok(row); assert.equal(row.user.archived,true); assert.equal(row.workMs,3.5*HOUR); assert.equal(row.breakMs,0.5*HOUR);
+  assert.equal(row.days.find((d)=>d.date==='2026-09-30').workMs,3.5*HOUR);
+  const october = (await f.admin.call('/api/timesheet?month=2026-10&userId=all')).data;
+  assert.equal(october.rows.some((r)=>r.user.id===e.user.id),false);
+  const ownOctober = (await f.admin.call('/api/calendar?month=2026-10&userId='+e.user.id)).data;
+  assert.equal(ownOctober.shifts.length,0); assert.equal(ownOctober.days.reduce((sum,d)=>sum+d.workMs,0),0);
+});
+
+test('shift edits require meaningful reasons and write exact before/after without changing legacy audit entries', async (t) => {
+  const f = await fixture(t); const e = await f.employee('editor',[]);
+  const original = (await f.admin.call('/api/shifts','POST',{userId:e.user.id,startedAt:f.now-4*HOUR,endedAt:f.now-HOUR,breaks:[],note:'Исходная смена'})).data.shift;
+  for (const reason of [undefined,'','  ','ab','x'.repeat(501)])
+    assert.equal((await e.call('/api/shifts/'+original.id,'PATCH',{version:1,note:'Исправлено',reason})).status,400);
+  assert.equal((await e.call('/api/dashboard')).data.shifts[0].version,1);
+  const edits = {version:1,note:'Исправлено',startedAt:f.now-3.5*HOUR,breaks:[{startedAt:f.now-3*HOUR,endedAt:f.now-2.5*HOUR}],reason:'  Забыл отметить перерыв  '};
+  const changed = await e.call('/api/shifts/'+original.id,'PATCH',edits); assert.equal(changed.status,200);
+  const entries = (await f.admin.call('/api/audit')).data.entries;
+  const update = entries.find((entry)=>entry.targetId===original.id && entry.action==='shift_updated');
+  assert.equal(update.actorName,e.user.name); assert.equal(update.details.reason,'Забыл отметить перерыв');
+  assert.deepEqual(update.details.before,{startedAt:original.startedAt,endedAt:original.endedAt,breaks:[],note:'Исходная смена'});
+  assert.deepEqual(update.details.after,{startedAt:edits.startedAt,endedAt:original.endedAt,breaks:edits.breaks,note:edits.note});
+  assert.equal(entries.find((entry)=>entry.targetId===original.id && entry.action==='shift_created').details.startedAt,original.startedAt);
+});
+
+test('persisted version-one SQLite upgrades additively and preserves users, shifts, sessions and historical audit', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(),'smena-v1-upgrade-')); const file = join(directory,'version-one.sqlite');
+  t.after(() => {
+    const target = resolve(directory); const allowed = resolve(tmpdir())+sep;
+    assert.ok(target.startsWith(allowed) && target.includes('smena-v1-upgrade-'));
+    rmSync(target,{recursive:true,force:true});
+  });
+  const before = createSqliteDatabase(file,{initialize:false});
+  before.executeScript(readFileSync(new URL('../drizzle/0000_ordinary_mephistopheles.sql',import.meta.url),'utf8'));
+  before.executeScript('PRAGMA user_version=1');
+  const created = Date.parse('2026-10-01T00:00:00Z');
+  await before.prepare('INSERT INTO users (id,username,name,password_hash,role,created_at) VALUES (?,?,?,?,?,?)')
+    .bind('legacy-user','legacy','Старый сотрудник','unchanged-hash','employee',created).run();
+  await before.prepare('INSERT INTO shifts (id,user_id,started_at,ended_at,note,version,revision_token) VALUES (?,?,?,?,?,?,?)')
+    .bind('legacy-shift','legacy-user',created,created+HOUR,'Не потерять',3,'old-revision').run();
+  await before.prepare('INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at,created_at) VALUES (?,?,?,?,?)')
+    .bind('old-token-hash','legacy-user','old-csrf',created+12*HOUR,created).run();
+  await before.prepare('INSERT INTO audit_log (id,actor_id,actor_name,action,target_type,target_id,details,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind('legacy-audit','legacy-user','Старый сотрудник','shift_updated','shift','legacy-shift','{"legacy":true}',created).run();
+  before.close();
+  let upgraded = createSqliteDatabase(file);
+  assert.equal((await upgraded.prepare('PRAGMA user_version').first()).user_version,2);
+  assert.equal((await upgraded.prepare('SELECT password_hash FROM users').first()).password_hash,'unchanged-hash');
+  assert.equal((await upgraded.prepare('SELECT version,note FROM shifts').first()).version,3);
+  assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM sessions').first()).count,1);
+  assert.equal((await upgraded.prepare('SELECT details FROM audit_log').first()).details,'{"legacy":true}');
+  assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM absences').first()).count,0);
+  upgraded.close(); upgraded=createSqliteDatabase(file);
+  assert.equal((await upgraded.prepare('SELECT COUNT(*) AS count FROM users').first()).count,1);
+  upgraded.close();
 });

@@ -42,3 +42,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
  action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log(created_at);
+CREATE TABLE IF NOT EXISTS absences (
+ id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL REFERENCES users(id),
+ start_date TEXT NOT NULL, end_date TEXT NOT NULL, type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+ created_at INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+ CONSTRAINT absences_type_check CHECK(type IN ('vacation','day_off','other')),
+ CONSTRAINT absences_date_check CHECK(end_date >= start_date)
+);
+CREATE INDEX IF NOT EXISTS absences_user_dates ON absences(user_id,start_date,end_date);

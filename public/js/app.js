@@ -16,7 +16,10 @@
     view_reports: ['Просмотр отчётов', 'Видеть итоги своего рабочего времени'],
     export_reports: ['Экспорт CSV', 'Скачивать отчёты о своём времени']
   };
-  const viewNames = { overview: 'Обзор', history: 'История смен', employees: 'Сотрудники', reports: 'Отчёты', audit: 'Журнал действий' };
+  const viewNames = { overview: 'Обзор', history: 'История смен', calendar: 'Календарь', employees: 'Сотрудники', reports: 'Отчёты', timesheet: 'Табель', audit: 'Журнал действий' };
+  const absenceLabels = { vacation: 'Отпуск', day_off: 'Отгул', other: 'Другое отсутствие' };
+  const dayLabels = { upcoming: 'По графику', not_started: 'Не начата', working: 'В работе', break: 'Перерыв', finished: 'Завершена', missed: 'Не отмечена' };
+  const teamLabels = { working: 'На работе', break: 'На перерыве', finished: 'Завершили', not_started: 'Не начали', absence: 'Отсутствуют', day_off: 'Выходной' };
   const dateFormatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: ZONE });
   const timeFormatter = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: ZONE });
   const fullFormatter = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: ZONE });
@@ -25,6 +28,10 @@
   let view = 'overview', offset = 0, mutationBusy = false, refreshBusy = false, connected = true;
   let toastTimeout, editingEmployeeId = null, editingShift = null, scheduleUserId = null, confirmCallback = null;
   let reportRequest = 0, dashboardRequest = 0, breakSequence = 0;
+  let calendarData = null, calendarRequest = 0, calendarDay = null;
+  let teamData = null, teamRequest = 0, teamFilter = 'all';
+  let timesheetData = null, timesheetRequest = 0, timesheetReady = false, absenceUserId = null;
+  const shiftCache = new Map();
 
   const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
@@ -53,6 +60,16 @@
   const totalBetween = (from, to, current = now()) => dashboard.shifts.reduce((sum, shift) => sum + workBetween(shift, from, to, current), 0);
   const metrics = (shift, current = now()) => ({ workMs: workBetween(shift, -Infinity, Infinity, current), breakMs: breakBetween(shift, -Infinity, Infinity, current), status: shift.endedAt != null ? 'finished' : shift.breaks.some(pause => pause.endedAt == null) ? 'break' : 'working' });
   const queryForUser = extra => new URLSearchParams({ userId: String(selectedUserId), ...extra }).toString();
+  const monthLabel = value => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: ZONE }).format(dayFromKey(`${value}-01`));
+  const shortHours = ms => `${(Math.max(0, Number(ms) || 0) / HOUR).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ч`;
+  const validMonth = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+  const lookupShift = id => shiftCache.get(String(id)) || dashboard.shifts.find(shift => String(shift.id) === String(id));
+  function cacheShifts(shifts) {
+    shifts.forEach(shift => {
+      const old = shiftCache.get(String(shift.id));
+      if (!old || Number(shift.version) >= Number(old.version)) shiftCache.set(String(shift.id), shift);
+    });
+  }
 
   function syncClock(data) { if (data.serverNow != null) offset = numericTime(data.serverNow) - Date.now(); }
   function notify(message, error = false) {
@@ -94,6 +111,24 @@
   function showAuth() {
     $$('dialog[open]').forEach(dialog => dialog.close());
     confirmCallback = null;
+    dashboardRequest += 1; reportRequest += 1;
+    calendarRequest += 1; teamRequest += 1; timesheetRequest += 1;
+    calendarData = null; teamData = null; timesheetData = null; calendarDay = null; timesheetReady = false; shiftCache.clear();
+    users = []; dashboard = { user: null, schedule: null, shifts: [] }; selectedUserId = null;
+    editingShift = null; editingEmployeeId = null; absenceUserId = null; teamFilter = 'all';
+    resetCalendarView(); invalidateTimesheet();
+    ['#employees-table', '#history-table', '#recent-shifts', '#report-table', '#audit-table', '#timeline', '#week-chart', '#team-stats', '#team-live-members', '#team-live-filters', '#selected-user', '#day-detail-body', '#permission-options', '#shift-breaks', '#schedule-weekdays'].forEach(selector => $(selector).replaceChildren());
+    ['#selected-name', '#selected-meta', '#profile-login', '#profile-role', '#day-detail-person', '#absence-person', '#schedule-person', '#confirm-title', '#confirm-text', '#confirm-error', '#week-total'].forEach(selector => { $(selector).textContent = ''; });
+    $$('[data-account-name], [data-account-role], [data-avatar]').forEach(element => { element.textContent = ''; });
+    $$('dialog form').forEach(form => form.reset());
+    ['#report-hours', '#report-count', '#report-average'].forEach(selector => { $(selector).textContent = '—'; });
+    ['#stat-today', '#stat-week', '#stat-month'].forEach(selector => { $(selector).innerHTML = statTime(0); });
+    $('#stat-breaks').textContent = '0 мин'; $('#timer').textContent = '00:00:00';
+    $('#calendar-person').textContent = 'План, факт и время для отдыха.';
+    $('#day-detail-title').textContent = 'Рабочий день'; $('#history-summary').textContent = '';
+    $('#timesheet-title').textContent = 'Месячный табель';
+    ['#calendar-feedback', '#timesheet-feedback', '#team-live-feedback'].forEach(selector => planningFeedback(selector));
+    document.body.classList.remove('printing-timesheet'); document.body.dataset.view = 'overview';
     $('#app').hidden = true; $('#auth-screen').hidden = false;
     const setup = session.setupRequired;
     $('#auth-eyebrow').textContent = setup ? 'ПЕРВЫЙ ЗАПУСК' : 'ВАШ ЛИЧНЫЙ КАБИНЕТ';
@@ -130,6 +165,8 @@
     $('#auth-form').reset(); $('#auth-error').textContent = '';
     if (isAdmin()) await loadUsers(); else users = [session.user];
     $('#report-from').value = dateKey(monthStart(now())); $('#report-to').value = dateKey(now());
+    $('#calendar-month').value = dateKey(now()).slice(0, 7); $('#timesheet-month').value = dateKey(now()).slice(0, 7);
+    $('#timesheet-scope').value = isAdmin() ? 'all' : 'selected';
     await loadDashboard();
     $('#auth-screen').hidden = true; $('#app').hidden = false;
     renderAccount();
@@ -137,7 +174,10 @@
   }
   async function loadUsers() {
     if (!isAdmin()) return;
-    const data = await api('/api/users?includeArchived=1'); users = data.users;
+    const token = session.csrfToken;
+    const data = await api('/api/users?includeArchived=1');
+    if (!isAdmin() || session.csrfToken !== token) return;
+    users = data.users;
     if (!users.some(user => String(user.id) === String(selectedUserId))) selectedUserId = session.user.id;
     $('#selected-user').innerHTML = users.map(user => `<option value="${escapeHTML(user.id)}">${escapeHTML(user.name)}${user.role === 'admin' ? ' · администратор' : user.archived ? ' · архив' : !user.active ? ' · заблокирован' : ''}</option>`).join('');
     $('#selected-user').value = String(selectedUserId);
@@ -150,6 +190,7 @@
     if (token !== dashboardRequest || !session.user) return;
     dashboard = result;
     dashboard.shifts = (result.shifts || []).map(shift => ({ ...shift, startedAt: numericTime(shift.startedAt), endedAt: shift.endedAt == null ? null : numericTime(shift.endedAt), breaks: (shift.breaks || []).map(pause => ({ startedAt: numericTime(pause.startedAt), endedAt: pause.endedAt == null ? null : numericTime(pause.endedAt) })) }));
+    cacheShifts(dashboard.shifts);
     renderDashboard();
   }
   function renderAccount() {
@@ -163,7 +204,7 @@
     $('#breadcrumb-role').textContent = isAdmin() ? 'Администрирование' : 'Личный кабинет';
     $$('[data-admin]').forEach(element => { element.hidden = !isAdmin(); });
     $$('[data-permission]').forEach(element => { element.hidden = !can(element.dataset.permission); });
-    $('#team-context').hidden = !isAdmin() || ['employees', 'audit'].includes(view);
+    $('#team-context').hidden = !isAdmin() || ['employees', 'audit'].includes(view) || (view === 'timesheet' && $('#timesheet-scope').value === 'all');
   }
   function plannedHours() {
     const schedule = dashboard.schedule;
@@ -278,13 +319,195 @@
     link.href = url; link.download = `smena-${from}-${to}.csv`; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000); notify('CSV-отчёт скачан.');
   }
+  function planningFeedback(selector, message = '', error = false) {
+    const element = $(selector); element.textContent = message; element.classList.toggle('is-error', error);
+  }
+  function calendarContextMatches(userId, month, token) {
+    return !!session.user && session.csrfToken === token && String(selectedUserId) === String(userId) && $('#calendar-month').value === month;
+  }
+  function resetCalendarView() {
+    calendarRequest += 1; calendarData = null; calendarDay = null;
+    $('#calendar-grid').replaceChildren(); $('#calendar-totals').replaceChildren();
+    if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
+  }
+  async function loadCalendar({ quiet = false } = {}) {
+    if (!session.user) return false;
+    const month = $('#calendar-month').value, userId = selectedUserId, token = session.csrfToken;
+    if (!validMonth(month)) { planningFeedback('#calendar-feedback', 'Выберите месяц календаря.', true); return false; }
+    const request = ++calendarRequest;
+    $('#calendar-grid').setAttribute('aria-busy', 'true');
+    if (!quiet) planningFeedback('#calendar-feedback', 'Загружаем календарь…');
+    try {
+      const result = await api(`/api/calendar?${new URLSearchParams({ month, userId: String(userId) })}`);
+      if (request !== calendarRequest || !calendarContextMatches(userId, month, token)) return false;
+      calendarData = result; cacheShifts(result.shifts || []);
+      planningFeedback('#calendar-feedback'); renderCalendar();
+      if ($('#calendar-day-dialog').open && calendarDay) renderDayDetails();
+      return true;
+    } catch (error) {
+      if (request === calendarRequest && calendarContextMatches(userId, month, token)) planningFeedback('#calendar-feedback', error.message + (calendarData ? ' Показаны последние загруженные данные.' : ''), true);
+      return false;
+    } finally { if (request === calendarRequest) $('#calendar-grid').setAttribute('aria-busy', 'false'); }
+  }
+  function renderCalendar() {
+    if (!calendarData) return;
+    const focusedDate = $('#calendar-grid').contains(document.activeElement) ? document.activeElement.dataset.date : null;
+    $('#calendar-person').textContent = `${calendarData.user.name} · ${monthLabel(calendarData.month)}`;
+    const sums = calendarData.days.reduce((total, day) => { ['plannedMs', 'workMs', 'lateMs', 'overtimeMs'].forEach(key => { total[key] += Number(day[key]) || 0; }); return total; }, { plannedMs: 0, workMs: 0, lateMs: 0, overtimeMs: 0 });
+    $('#calendar-totals').innerHTML = [['План месяца', sums.plannedMs, 'plan'], ['Отработано', sums.workMs, 'fact'], ['Опоздания', sums.lateMs, 'late'], ['Сверх плана', sums.overtimeMs, 'extra']].map(([label, value, type]) => `<article class="planning-total ${type}"><span>${label}</span><strong>${readable(value)}</strong></article>`).join('');
+    const first = (zonedDate(dayFromKey(`${calendarData.month}-01`)).getUTCDay() + 6) % 7;
+    let html = Array.from({ length: first }, () => '<span class="calendar-spacer" aria-hidden="true"></span>').join('');
+    html += calendarData.days.map(day => {
+      const status = day.kind === 'absence' ? (absenceLabels[day.absence?.type] || 'Отсутствие') : day.kind === 'day_off' ? 'Выходной' : (dayLabels[day.state] || 'Рабочий день');
+      const today = day.date === dateKey(now()), active = ['working', 'break'].includes(day.state);
+      const label = `${dateFormatter.format(dayFromKey(day.date))}. ${status}. План ${readable(day.plannedMs)}. Факт ${readable(day.workMs)}${day.lateMs ? `. Опоздание ${readable(day.lateMs)}` : ''}${day.overtimeMs ? `. Сверх плана ${readable(day.overtimeMs)}` : ''}`;
+      return `<button type="button" class="calendar-day ${day.kind === 'absence' ? 'is-absence' : day.kind === 'day_off' ? 'is-day-off' : ''}${today ? ' is-today' : ''}${Number(day.workMs) > 0 ? ' has-work' : ''}${active ? ' is-active' : ''}" data-action="calendar-day" data-date="${escapeHTML(day.date)}" aria-label="${escapeHTML(label)}"${today ? ' aria-current="date"' : ''}><span class="calendar-day-top"><span class="calendar-day-number">${Number(day.date.slice(-2))}</span>${today ? '<span class="calendar-today-label">Сегодня</span>' : ''}${active ? '<i class="live-dot" aria-hidden="true"></i>' : ''}</span><span class="calendar-day-status">${escapeHTML(status)}</span><span class="calendar-day-fact">${Number(day.workMs) > 0 || active ? shortHours(day.workMs) : '—'}</span><span class="calendar-day-plan">${day.plannedMs > 0 ? `план ${shortHours(day.plannedMs)}` : 'без плана'}</span><span class="calendar-day-flags">${day.lateMs > 0 ? '<i class="day-flag late" title="Опоздание">!</i>' : ''}${day.overtimeMs > 0 ? '<i class="day-flag extra" title="Сверх плана">+</i>' : ''}</span></button>`;
+    }).join('');
+    const trailing = (7 - (first + calendarData.days.length) % 7) % 7;
+    html += Array.from({ length: trailing }, () => '<span class="calendar-spacer" aria-hidden="true"></span>').join('');
+    $('#calendar-grid').innerHTML = html;
+    if (focusedDate) [...$('#calendar-grid').querySelectorAll('[data-date]')].find(button => button.dataset.date === focusedDate)?.focus({ preventScroll: true });
+  }
+  function openCalendarDay(date) {
+    if (!calendarData || !calendarData.days.some(day => day.date === date)) return;
+    calendarDay = date; renderDayDetails();
+    if (!$('#calendar-day-dialog').open) $('#calendar-day-dialog').showModal();
+  }
+  function renderDayDetails() {
+    const day = calendarData?.days.find(item => item.date === calendarDay); if (!day) return;
+    const body = $('#day-detail-body'), previousFocus = body.contains(document.activeElement) ? document.activeElement.closest('[data-action]') : null;
+    const focusedAction = previousFocus ? { action: previousFocus.dataset.action, id: previousFocus.dataset.id } : null;
+    const scroll = body.parentElement.scrollTop + body.scrollTop;
+    $('#day-detail-title').textContent = dateFormatter.format(dayFromKey(day.date));
+    $('#day-detail-person').textContent = calendarData.user.name;
+    const shifts = (calendarData.shifts || []).filter(shift => (day.shiftIds || []).map(String).includes(String(shift.id))).sort((a, b) => a.startedAt - b.startedAt);
+    const absence = day.absence;
+    const plan = day.plannedStart != null && day.plannedEnd != null && day.plannedMs > 0 ? `${timeFormatter.format(day.plannedStart)}–${timeFormatter.format(day.plannedEnd)}${dateKey(day.plannedEnd) !== day.date ? ' · следующий день' : ''}` : day.kind === 'absence' ? 'Отсутствие по плану' : 'Выходной';
+    let html = `<div class="day-plan-line"><span>План рабочего дня</span><strong>${plan}</strong></div><div class="day-detail-metrics">${[['План', day.plannedMs], ['Факт', day.workMs], ['Опоздание', day.lateMs], ['Сверх плана', day.overtimeMs]].map(([label, value]) => `<div><span>${label}</span><strong>${readable(value)}</strong></div>`).join('')}</div>`;
+    if (absence) html += `<article class="absence-detail"><div><span class="absence-icon">${icon('calendar')}</span><strong>${escapeHTML(absenceLabels[absence.type] || 'Отсутствие')}</strong></div><p>${escapeHTML(absence.startDate)} — ${escapeHTML(absence.endDate)}</p>${absence.note ? `<p>${escapeHTML(absence.note)}</p>` : ''}${isAdmin() ? `<button class="button small danger" data-action="delete-absence" data-id="${escapeHTML(absence.id)}">Удалить отсутствие</button>` : ''}</article>`;
+    html += '<div class="day-shifts-heading"><h3>Смены и перерывы</h3><span>' + shifts.length + '</span></div>';
+    html += shifts.length ? shifts.map(shift => {
+      const metric = metrics(shift);
+      return `<article class="day-shift"><div class="day-shift-top"><strong>${timeFormatter.format(shift.startedAt)} — ${shift.endedAt == null ? 'продолжается' : timeFormatter.format(shift.endedAt) + (dateKey(shift.endedAt) !== day.date ? ` · ${dateFormatter.format(shift.endedAt)}` : '')}</strong><span>${readable(metric.workMs)}</span></div><p class="day-shift-state">${shift.endedAt == null ? metric.status === 'break' ? 'Сейчас на перерыве' : 'Рабочее время идёт' : 'Смена завершена'}</p>${shift.breaks.length ? `<ul class="day-break-list">${shift.breaks.map(pause => `<li><span>${icon('coffee')} ${timeFormatter.format(pause.startedAt)} — ${pause.endedAt == null ? 'продолжается' : timeFormatter.format(pause.endedAt)}</span><strong>${readable((pause.endedAt ?? now()) - pause.startedAt)}</strong></li>`).join('')}</ul>` : '<p class="card-subtitle">Без перерывов</p>'}${shift.note ? `<p class="day-shift-note">${escapeHTML(shift.note)}</p>` : ''}<div class="day-shift-actions">${canEditShift(shift) ? `<button class="button small" data-action="edit-shift" data-id="${escapeHTML(shift.id)}">Изменить смену</button>` : ''}${canDeleteShift(shift) ? `<button class="button small danger" data-action="delete-shift" data-id="${escapeHTML(shift.id)}">Удалить</button>` : ''}</div></article>`;
+    }).join('') : '<div class="day-empty">Отметок начала смены в этот день пока нет.</div>';
+    if (isAdmin() && !absence) html += '<button class="button drawer-absence-button" data-action="add-absence">Добавить отсутствие на этот день</button>';
+    html += '<p class="planning-note drawer-note">План по текущему графику · Ночные смены — по дате начала</p>';
+    body.innerHTML = html; body.scrollTop = scroll;
+    if (focusedAction && $('#calendar-day-dialog').open) {
+      const replacement = [...body.querySelectorAll('[data-action]')].find(button => button.dataset.action === focusedAction.action && button.dataset.id === focusedAction.id);
+      (replacement || $('#calendar-day-dialog .close-button')).focus({ preventScroll: true });
+    }
+  }
+  async function changeCalendarMonth(delta = 0, current = false) {
+    const value = current ? dateKey(now()).slice(0, 7) : $('#calendar-month').value;
+    if (!validMonth(value)) return;
+    const date = new Date(`${value}-01T12:00:00Z`); date.setUTCMonth(date.getUTCMonth() + delta);
+    $('#calendar-month').value = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}`;
+    resetCalendarView(); await loadCalendar();
+  }
+  function openAbsence() {
+    if (!isAdmin()) return;
+    absenceUserId = calendarData?.user?.id ?? selectedUserId;
+    const employee = users.find(user => String(user.id) === String(absenceUserId)) || dashboard.user;
+    const date = calendarDay || ($('#calendar-month').value === dateKey(now()).slice(0, 7) ? dateKey(now()) : `${$('#calendar-month').value}-01`);
+    $('#absence-form').reset(); $('#absence-start').value = date; $('#absence-end').value = date;
+    $('#absence-person').textContent = employee?.name || 'Сотрудник'; $('#absence-error').textContent = '';
+    if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
+    $('#absence-dialog').showModal();
+  }
+  async function loadTeamStatus({ quiet = false } = {}) {
+    if (!isAdmin()) return false;
+    const request = ++teamRequest, token = session.csrfToken;
+    $('#team-live-members').setAttribute('aria-busy', 'true');
+    if (!quiet) planningFeedback('#team-live-feedback', 'Проверяем, кто сейчас на работе…');
+    try {
+      const result = await api('/api/team-status');
+      if (request !== teamRequest || token !== session.csrfToken || !isAdmin()) return false;
+      teamData = result; planningFeedback('#team-live-feedback'); renderTeamStatus(); return true;
+    } catch (error) {
+      if (request === teamRequest && isAdmin()) planningFeedback('#team-live-feedback', error.message, true);
+      return false;
+    } finally { if (request === teamRequest) $('#team-live-members').setAttribute('aria-busy', 'false'); }
+  }
+  function renderTeamStatus() {
+    if (!teamData || !isAdmin()) return;
+    const all = teamData.members || [];
+    $('#team-live-filters').innerHTML = [['all', 'Все'], ...Object.entries(teamLabels)].map(([key, label]) => `<button type="button" class="team-status-chip${teamFilter === key ? ' selected' : ''}" data-action="team-filter" data-status="${key}" aria-pressed="${teamFilter === key}"><i class="team-status-dot ${key}" aria-hidden="true"></i><span>${label}</span><strong>${key === 'all' ? all.length : all.filter(member => member.status === key).length}</strong></button>`).join('');
+    const members = all.filter(member => teamFilter === 'all' || member.status === teamFilter);
+    $('#team-live-members').innerHTML = members.length ? members.map(member => `<article class="team-live-person"><div class="team-live-person-header"><span class="avatar">${escapeHTML(member.user.name.split(/\s+/).slice(0, 2).map(word => word[0]).join(''))}</span><div><strong>${escapeHTML(member.user.name)}</strong><span>${escapeHTML(member.user.department || member.user.position || 'Сотрудник')}</span></div><span class="team-live-status ${escapeHTML(member.status)}">${escapeHTML(teamLabels[member.status] || member.status)}</span></div><div class="team-live-hours"><span>Сегодня <strong>${readable(member.day?.workMs || 0)}</strong></span><span>План <strong>${shortHours(member.day?.plannedMs || 0)}</strong></span></div>${member.activeShift ? `<p class="team-live-caption">Смена с ${fullFormatter.format(member.activeShift.startedAt)}</p>` : member.status === 'absence' ? `<p class="team-live-caption">${escapeHTML(absenceLabels[member.day?.absence?.type] || 'Запланированное отсутствие')}</p>` : '<p class="team-live-caption">По графику сотрудника</p>'}<button class="text-button" data-action="calendar-user" data-id="${escapeHTML(member.user.id)}">Открыть календарь ${icon('arrow')}</button></article>`).join('') : emptyState('Здесь пока никого', 'Выберите другой статус или добавьте сотрудников.');
+    $('#team-live-updated').textContent = `Обновлено ${timeFormatter.format(teamData.serverNow || now())} · проверка каждые 20 секунд`;
+  }
+  function timesheetSelection() { return isAdmin() && $('#timesheet-scope').value === 'all' ? 'all' : String(selectedUserId); }
+  function invalidateTimesheet() {
+    timesheetRequest += 1; timesheetReady = false; timesheetData = null; $('#print-timesheet').disabled = true;
+    $('#timesheet-table').replaceChildren(); $('#timesheet-print-content').replaceChildren(); $('#timesheet-subtitle').textContent = ''; $('#timesheet-generated').textContent = '';
+  }
+  async function loadTimesheet({ quiet = false } = {}) {
+    if (!can('view_reports')) return false;
+    const month = $('#timesheet-month').value, userId = timesheetSelection(), token = session.csrfToken;
+    if (!validMonth(month)) { planningFeedback('#timesheet-feedback', 'Выберите месяц табеля.', true); return false; }
+    const request = ++timesheetRequest; timesheetReady = false; $('#print-timesheet').disabled = true;
+    $('#timesheet-document').setAttribute('aria-busy', 'true');
+    if (!quiet) planningFeedback('#timesheet-feedback', 'Формируем табель…');
+    try {
+      const result = await api(`/api/timesheet?${new URLSearchParams({ month, userId })}`);
+      if (request !== timesheetRequest || token !== session.csrfToken || !can('view_reports') || $('#timesheet-month').value !== month || timesheetSelection() !== userId) return false;
+      timesheetData = result; timesheetReady = true; renderTimesheet(); planningFeedback('#timesheet-feedback'); return true;
+    } catch (error) {
+      if (request === timesheetRequest && token === session.csrfToken) planningFeedback('#timesheet-feedback', error.message, true);
+      return false;
+    } finally {
+      if (request === timesheetRequest) { $('#timesheet-document').setAttribute('aria-busy', 'false'); $('#print-timesheet').disabled = !timesheetReady; }
+    }
+  }
+  function timesheetCode(day) {
+    if (day.kind === 'absence') return { vacation: 'ОТ', day_off: 'ОГ', other: 'О' }[day.absence?.type] || 'О';
+    if (day.kind === 'day_off') return 'В';
+    return day.state === 'missed' ? 'Н' : '·';
+  }
+  function renderTimesheet() {
+    if (!timesheetData) return;
+    const report = timesheetData, dates = report.days.map(day => typeof day === 'string' ? day : day.date);
+    $('#timesheet-title').textContent = `Табель · ${monthLabel(report.month)}`;
+    $('#timesheet-subtitle').textContent = report.rows.length === 1 ? report.rows[0].user.name : `Сотрудников в табеле: ${report.rows.length}`;
+    $('#timesheet-generated').textContent = `Сформирован ${fullFormatter.format(report.serverNow || now())}`;
+    if (!report.rows.length) { $('#timesheet-table').innerHTML = emptyState('Нет сотрудников для табеля', 'Выберите сотрудника или другой месяц.'); $('#timesheet-print-content').textContent = 'Нет сотрудников для табеля.'; return; }
+    const hoursNumber = value => (Number(value || 0) / HOUR).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+    const totals = report.rows.reduce((sum, row) => { ['plannedMs', 'workMs', 'lateMs', 'overtimeMs'].forEach(key => { sum[key] += Number(row[key]) || 0; }); return sum; }, { plannedMs: 0, workMs: 0, lateMs: 0, overtimeMs: 0 });
+    $('#timesheet-table').innerHTML = `<table class="timesheet-table"><caption class="visually-hidden">Рабочее время по дате начала смены, часы</caption><thead><tr><th scope="col" class="timesheet-person-col">Сотрудник</th>${dates.map(date => `<th scope="col" class="${[0, 6].includes(zonedDate(dayFromKey(date)).getUTCDay()) ? 'weekend-column' : ''}">${Number(date.slice(-2))}</th>`).join('')}<th scope="col" class="total-column">План</th><th scope="col" class="total-column">Факт</th><th scope="col" class="total-column">Опозд.</th><th scope="col" class="total-column">Сверх</th></tr></thead><tbody>${report.rows.map(row => {
+      const days = new Map(row.days.map(day => [day.date, day]));
+      return `<tr><th scope="row" class="timesheet-person-col"><strong>${escapeHTML(row.user.name)}</strong><span>${escapeHTML(row.user.position || row.user.department || '')}</span></th>${dates.map(date => {
+        const day = days.get(date); if (!day) return '<td>—</td>';
+        const code = timesheetCode(day), hasTime = day.workMs > 0 || day.shiftIds?.length > 0 || ['working', 'break'].includes(day.state);
+        const title = `${date}: факт ${readable(day.workMs)}, план ${readable(day.plannedMs)}, опоздание ${readable(day.lateMs)}, сверх плана ${readable(day.overtimeMs)}`;
+        return `<td title="${escapeHTML(title)}" class="${day.kind === 'absence' ? 'absence-cell' : day.kind === 'day_off' ? 'weekend-column' : ''}${day.lateMs > 0 ? ' late-cell' : ''}"><span>${hasTime ? hoursNumber(day.workMs) : code}</span>${hasTime && day.kind === 'absence' ? `<small>${code}</small>` : ''}${['working', 'break'].includes(day.state) ? '<small>●</small>' : ''}</td>`;
+      }).join('')}<td class="total-column">${hoursNumber(row.plannedMs)}</td><td class="total-column fact-total">${hoursNumber(row.workMs)}</td><td class="total-column">${hoursNumber(row.lateMs)}</td><td class="total-column">${hoursNumber(row.overtimeMs)}</td></tr>`;
+    }).join('')}</tbody><tfoot><tr><th scope="row" colspan="${dates.length + 1}">Итого, часов</th><td>${hoursNumber(totals.plannedMs)}</td><td>${hoursNumber(totals.workMs)}</td><td>${hoursNumber(totals.lateMs)}</td><td>${hoursNumber(totals.overtimeMs)}</td></tr></tfoot></table>`;
+    const printHalves = [dates.slice(0, 15), dates.slice(15)].filter(half => half.length);
+    const printDay = day => !day ? '—' : day.workMs > 0 || day.shiftIds?.length > 0 || ['working', 'break'].includes(day.state) ? hoursNumber(day.workMs) + (day.kind === 'absence' ? ` / ${timesheetCode(day)}` : '') : timesheetCode(day);
+    $('#timesheet-print-content').innerHTML = printHalves.map(half => `<section class="print-half"><h3>${Number(half[0].slice(-2))}–${Number(half.at(-1).slice(-2))} · ${escapeHTML(monthLabel(report.month))}</h3><table class="timesheet-print-table"><thead><tr><th scope="col" class="print-person">Сотрудник</th>${half.map(date => `<th scope="col">${Number(date.slice(-2))}</th>`).join('')}<th scope="col">Факт, ч</th></tr></thead><tbody>${report.rows.map(row => {
+      const dayMap = new Map(row.days.map(day => [day.date, day]));
+      return `<tr><th scope="row" class="print-person">${escapeHTML(row.user.name)}</th>${half.map(date => `<td>${printDay(dayMap.get(date))}</td>`).join('')}<td>${hoursNumber(half.reduce((sum, date) => sum + Number(dayMap.get(date)?.workMs || 0), 0))}</td></tr>`;
+    }).join('')}</tbody></table></section>`).join('') + `<section class="print-month-totals"><h3>Итоги месяца, часы</h3><table class="timesheet-print-table"><thead><tr><th scope="col" class="print-person">Сотрудник</th><th scope="col">План</th><th scope="col">Факт</th><th scope="col">Перерывы</th><th scope="col">Опоздания</th><th scope="col">Сверх плана</th></tr></thead><tbody>${report.rows.map(row => `<tr><th scope="row" class="print-person">${escapeHTML(row.user.name)}</th><td>${hoursNumber(row.plannedMs)}</td><td>${hoursNumber(row.workMs)}</td><td>${hoursNumber(row.breakMs)}</td><td>${hoursNumber(row.lateMs)}</td><td>${hoursNumber(row.overtimeMs)}</td></tr>`).join('')}</tbody></table></section>`;
+  }
+  async function refreshPlanning({ forceDetails = false } = {}) {
+    if (!session.user) return;
+    const tasks = [];
+    if (view === 'calendar' || calendarData) tasks.push(loadCalendar({ quiet: true }));
+    if (isAdmin() && (view === 'employees' || teamData)) tasks.push(loadTeamStatus({ quiet: true }));
+    if (can('view_reports') && !document.body.classList.contains('printing-timesheet') && (view === 'timesheet' || timesheetData)) tasks.push(loadTimesheet({ quiet: true }));
+    await Promise.allSettled(tasks);
+    if (forceDetails && $('#calendar-day-dialog').open) renderDayDetails();
+  }
   function auditDetails(entry) {
     let details = entry.details || {};
     if (typeof details === 'string') { try { details = JSON.parse(details); } catch { return escapeHTML(details); } }
-    const labels = { name: 'Имя', username: 'Логин', position: 'Должность', department: 'Отдел', active: 'Вход разрешён', archived: 'В архиве', passwordReset: 'Пароль сброшен', permissions: 'Права доступа', userId: 'Сотрудник', startedAt: 'Начало смены', endedAt: 'Конец смены', breaks: 'Перерывы', note: 'Комментарий', startTime: 'Начало рабочего дня', endTime: 'Конец рабочего дня', breakMinutes: 'Плановый перерыв, мин', weekdays: 'Рабочие дни', timezone: 'Часовой пояс', from: 'С даты', to: 'По дату' };
+    const labels = { name: 'Имя', username: 'Логин', position: 'Должность', department: 'Отдел', active: 'Вход разрешён', archived: 'В архиве', passwordReset: 'Пароль сброшен', permissions: 'Права доступа', userId: 'Сотрудник', startedAt: 'Начало смены', endedAt: 'Конец смены', breaks: 'Перерывы', note: 'Комментарий', startTime: 'Начало рабочего дня', endTime: 'Конец рабочего дня', breakMinutes: 'Плановый перерыв, мин', weekdays: 'Рабочие дни', timezone: 'Часовой пояс', from: 'С даты', to: 'По дату', reason: 'Причина изменения', before: 'До изменения', after: 'После изменения', startDate: 'Первый день', endDate: 'Последний день', type: 'Вид отсутствия' };
     const format = (key, value) => {
       if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
       if (value == null) return key === 'endedAt' ? 'Продолжается' : '—';
+      if (['before', 'after'].includes(key) && typeof value === 'object') return '\n' + Object.entries(value).filter(([field]) => labels[field]).map(([field, content]) => `  ${labels[field]}: ${format(field, content)}`).join('\n');
+      if (key === 'type') return absenceLabels[value] || String(value);
       if (key === 'userId') return users.find(user => String(user.id) === String(value))?.name || 'Сотрудник';
       if (key === 'permissions') return value.map(permission => permissions[permission]?.[0] || permission).join(', ') || 'Нет дополнительных прав';
       if (key === 'weekdays') return value.map(day => weekdays[day - 1]).join(', ') || 'Не заданы';
@@ -297,22 +520,28 @@
   }
   async function loadAudit() {
     if (!isAdmin()) return;
+    const token = session.csrfToken;
     const data = await api('/api/audit');
+    if (!isAdmin() || session.csrfToken !== token) return;
     const actions = { 'setup': 'Создание администратора', 'auth.setup': 'Создание администратора', 'login': 'Вход в систему', 'auth.login': 'Вход в систему', 'logout': 'Выход из системы', 'auth.logout': 'Выход из системы', 'user.create': 'Создан сотрудник', 'user.update': 'Изменён сотрудник', 'user.archive': 'Сотрудник отправлен в архив', 'profile.update': 'Обновлён профиль', 'password.change': 'Изменён пароль', 'auth.password_change': 'Изменён пароль', 'schedule.update': 'Изменён график', 'shift.start': 'Начата смена', 'shift.pause': 'Начат перерыв', 'shift.resume': 'Завершён перерыв', 'shift.finish': 'Завершена смена', 'shift.create': 'Добавлена смена', 'shift.update': 'Изменена смена', 'shift.delete': 'Удалена смена' };
     Object.assign(actions, { admin_created: 'Создан аккаунт администратора', user_created: 'Создан сотрудник', user_updated: 'Изменён сотрудник', user_archived: 'Сотрудник отправлен в архив', profile_updated: 'Обновлён профиль', password_changed: 'Изменён пароль', schedule_updated: 'Изменён график', shift_started: 'Начата смена', break_started: 'Начат перерыв', break_finished: 'Завершён перерыв', shift_finished: 'Завершена смена', shift_created: 'Добавлена смена', shift_updated: 'Изменена смена', shift_deleted: 'Удалена смена', report_exported: 'Скачан отчёт CSV' });
+    Object.assign(actions, { absence_created: 'Добавлено отсутствие', absence_deleted: 'Удалено отсутствие' });
     $('#audit-table').innerHTML = data.entries.length ? `<div class="table-wrap"><table class="data-table audit-table"><thead><tr><th>Дата и время</th><th>Пользователь</th><th>Действие</th><th>Подробности</th></tr></thead><tbody>${data.entries.map(entry => `<tr><td>${fullFormatter.format(numericTime(entry.createdAt))}</td><td>${escapeHTML(entry.actorName || 'Система')}</td><td>${escapeHTML(actions[entry.action] || entry.action)}</td><td><details><summary>${escapeHTML(entry.targetType === 'user' ? (users.find(user => String(user.id) === String(entry.targetId))?.name || 'Сотрудник') : entry.targetType === 'shift' ? 'Изменения смены' : 'Подробнее')}</summary><pre>${auditDetails(entry)}</pre></details></td></tr>`).join('')}</tbody></table></div>` : emptyState('Журнал пока пуст', 'Изменения появятся здесь автоматически.');
   }
   async function setView(name) {
-    if (!viewNames[name] || (!isAdmin() && ['employees', 'audit'].includes(name)) || (name === 'reports' && !can('view_reports'))) name = 'overview';
+    if (!viewNames[name] || (!isAdmin() && ['employees', 'audit'].includes(name)) || (['reports', 'timesheet'].includes(name) && !can('view_reports'))) name = 'overview';
     const previousView = view;
     view = name;
+    document.body.dataset.view = name;
     $$('.section-view').forEach(element => { element.hidden = element.id !== `view-${name}`; });
     $$('.nav-link').forEach(element => { const active = element.dataset.view === name; element.classList.toggle('active', active); if (active) element.setAttribute('aria-current', 'page'); else element.removeAttribute('aria-current'); });
     $('#breadcrumb-current').textContent = viewNames[name];
     if (previousView !== name) document.dispatchEvent(new CustomEvent('smena:viewchange', { detail: { view: name } }));
     if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
     renderAccount();
-    if (name === 'employees') await loadUsers();
+    if (name === 'employees') { await loadUsers(); await loadTeamStatus(); }
+    if (name === 'calendar') await loadCalendar();
+    if (name === 'timesheet') await loadTimesheet();
     if (name === 'reports') await loadReport();
     if (name === 'audit') await loadAudit();
   }
@@ -324,12 +553,16 @@
       const latest = await api('/api/session');
       if (!session.user || session.csrfToken !== refreshToken) return;
       if (!latest.user) { session = latest; showAuth(); return; }
+      if (String(latest.user.id) !== String(session.user.id) || latest.csrfToken !== refreshToken) {
+        session = latest; showAuth(); await enterApp(); return;
+      }
       session = latest; renderAccount();
-      if ((!isAdmin() && ['employees', 'audit'].includes(view)) || (view === 'reports' && !can('view_reports'))) await setView('overview');
+      if ((!isAdmin() && ['employees', 'audit'].includes(view)) || (['reports', 'timesheet'].includes(view) && !can('view_reports'))) await setView('overview');
       if (isAdmin()) await loadUsers();
       await loadDashboard();
       if (view === 'reports' && !$('dialog[open]') && !$('#report-filter-form').contains(document.activeElement) && $('#report-from').value && $('#report-to').value && $('#report-from').value <= $('#report-to').value && dayFromKey($('#report-to').value) - dayFromKey($('#report-from').value) < 366 * DAY) await loadReport();
       if (view === 'audit') await loadAudit();
+      await refreshPlanning();
     } catch (error) {
       if (session.user) connectionStatus(false, error.message);
     } finally { refreshBusy = false; }
@@ -338,7 +571,7 @@
     if (mutationBusy) return false;
     mutationBusy = true; renderTimer();
     $$('dialog[open] button, #auth-submit').forEach(button => { button.disabled = true; });
-    try { await task(); if (message) notify(message); return true; }
+    try { await task(); await refreshPlanning({ forceDetails: true }); if (message) notify(message); return true; }
     finally { mutationBusy = false; $$('dialog button, #auth-submit').forEach(button => { button.disabled = false; }); renderTimer(); }
   }
   function confirmAction(title, description, label, callback, danger = false) {
@@ -384,24 +617,30 @@
     $('#shift-breaks').append(row);
   }
   function openShift(id = null) {
-    const shift = id == null ? null : dashboard.shifts.find(item => String(item.id) === String(id));
+    const shift = id == null ? null : lookupShift(id);
     if (id != null && !shift) { notify('Эта смена больше недоступна. Обновите список смен.', true); return; }
     if (shift ? !canEditShift(shift) : !(can('edit_own_shifts') && (isAdmin() || String(selectedUserId) === String(session.user.id)))) { notify('Нет доступа к изменению этой смены.', true); return; }
     editingShift = shift ? { ...shift } : null; $('#shift-form').reset();
     $('#shift-title').textContent = shift ? 'Изменить смену' : 'Добавить смену';
     $('#shift-start').value = dateInput(shift?.startedAt ?? now()); $('#shift-end').value = shift?.endedAt != null ? dateInput(shift.endedAt) : '';
     $('#shift-note').value = shift?.note || ''; $('#shift-breaks').replaceChildren(); (shift?.breaks || []).forEach(addBreakRow);
+    $('#shift-reason').value = ''; $('#shift-reason').required = !!shift; $('#shift-reason-field').hidden = !shift;
+    if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
     $('#shift-error').textContent = ''; $('#shift-dialog').showModal();
   }
   async function selectUser(id, targetView = null) {
     selectedUserId = id; $('#selected-user').value = String(id); reportRequest += 1;
+    shiftCache.clear(); resetCalendarView(); invalidateTimesheet();
     await loadDashboard();
-    if (targetView) await setView(targetView); else if (view === 'reports') await loadReport();
+    if (targetView) await setView(targetView);
+    else if (view === 'reports') await loadReport();
+    else if (view === 'calendar') await loadCalendar();
+    else if (view === 'timesheet') await loadTimesheet();
   }
   async function afterUserChange() { await loadUsers(); await loadDashboard(); }
 
   document.addEventListener('click', async event => {
-    const viewButton = event.target.closest('[data-view]');
+    const viewButton = event.target.closest('button[data-view], a[data-view]');
     if (viewButton) { try { await setView(viewButton.dataset.view); } catch (error) { notify(error.message, true); } return; }
     const button = event.target.closest('[data-action]'); if (!button || button.disabled) return;
     const { action, id } = button.dataset;
@@ -409,6 +648,32 @@
       if (action === 'close-dialog') { button.closest('dialog').close(); return; }
       if (action === 'retry') { await initialize(); return; }
       if (!session.user) return;
+      if (action === 'calendar-day') openCalendarDay(button.dataset.date);
+      if (action === 'calendar-prev') await changeCalendarMonth(-1);
+      if (action === 'calendar-next') await changeCalendarMonth(1);
+      if (action === 'calendar-today') await changeCalendarMonth(0, true);
+      if (action === 'calendar-user') { $('#calendar-month').value = dateKey(now()).slice(0, 7); await selectUser(id, 'calendar'); }
+      if (action === 'add-absence') openAbsence();
+      if (action === 'refresh-team') await loadTeamStatus();
+      if (action === 'team-filter') { teamFilter = button.dataset.status; renderTeamStatus(); }
+      if (action === 'print-timesheet') {
+        if (!can('view_reports') || !timesheetReady) { notify('Сначала дождитесь загрузки табеля.', true); return; }
+        document.body.classList.add('printing-timesheet'); window.print();
+      }
+      if (action === 'delete-absence') {
+        if (!isAdmin()) return;
+        const absence = calendarData?.absences?.find(item => String(item.id) === String(id));
+        if (!absence) { notify('Запись уже изменилась. Откройте день заново.', true); await loadCalendar(); return; }
+        confirmAction('Удалить отсутствие?', `${absenceLabels[absence.type] || 'Отсутствие'}: ${absence.startDate} — ${absence.endDate}. Будет удалён весь указанный период; план пересчитается по текущему графику.`, 'Удалить отсутствие', async () => {
+          try { await api(`/api/absences/${encodeURIComponent(id)}`, { method: 'DELETE', body: { version: absence.version } }); }
+          catch (error) {
+            if (![404, 409].includes(error.status)) throw error;
+            $('#confirm-dialog').close(); confirmCallback = null;
+            await loadCalendar(); notify('Отсутствие уже изменилось. Проверьте календарь и повторите действие.', true); return;
+          }
+          $('#confirm-dialog').close(); confirmCallback = null; notify('Отсутствие удалено.');
+        }, true);
+      }
       if (action === 'profile') openProfile();
       if (action === 'logout') await mutate(async () => { await api('/api/logout', { method: 'POST', body: {} }); session.user = null; selectedUserId = null; dashboardRequest += 1; reportRequest += 1; $$('dialog[open]').forEach(dialog => dialog.close()); await initialize(); });
       if (action === 'start') await mutate(async () => { await api('/api/shifts/start', { method: 'POST', body: { userId: selectedUserId } }); await loadDashboard(); }, 'Смена началась. Хорошего рабочего дня!');
@@ -443,10 +708,11 @@
       if (action === 'add-shift') openShift();
       if (action === 'edit-shift') openShift(id);
       if (action === 'delete-shift') {
-        const shift = dashboard.shifts.find(item => String(item.id) === String(id));
+        const shift = lookupShift(id);
         if (!shift) { await loadDashboard(); notify('Список смен обновился. Выберите смену заново.', true); return; }
         if (!canDeleteShift(shift)) { notify('Нет права на удаление этой смены.', true); return; }
-        confirmAction('Удалить смену целиком?', `${dashboard.user.name}: смена от ${fullFormatter.format(shift.startedAt)} будет удалена вместе со всеми перерывами. Её события исчезнут, рабочее время пересчитается. Действие останется в журнале.`, 'Удалить смену', async () => {
+        const ownerName = users.find(user => String(user.id) === String(shift.userId))?.name || dashboard.user.name;
+        confirmAction('Удалить смену целиком?', `${ownerName}: смена от ${fullFormatter.format(shift.startedAt)} будет удалена вместе со всеми перерывами. Её события исчезнут, рабочее время пересчитается. Действие останется в журнале.`, 'Удалить смену', async () => {
           try { await api(`/api/shifts/${encodeURIComponent(id)}`, { method: 'DELETE', body: { version: shift.version } }); }
           catch (error) {
             if (![404, 409].includes(error.status)) throw error;
@@ -456,7 +722,9 @@
             return;
           }
           $('#confirm-dialog').close(); confirmCallback = null;
+          shiftCache.delete(String(id));
           dashboard.shifts = dashboard.shifts.filter(item => String(item.id) !== String(id));
+          if (calendarData) calendarData.shifts = calendarData.shifts.filter(item => String(item.id) !== String(id));
           renderDashboard();
           notify('Смена удалена.');
           try { await loadDashboard(); }
@@ -507,12 +775,44 @@
   $('#shift-form').addEventListener('submit', async event => {
     event.preventDefault(); $('#shift-error').textContent = '';
     const payload = { startedAt: parseInput($('#shift-start').value), endedAt: parseInput($('#shift-end').value), breaks: $$('#shift-breaks .break-row').map(row => ({ startedAt: parseInput(row.querySelector('[data-break-start]').value), endedAt: parseInput(row.querySelector('[data-break-end]').value) })), note: $('#shift-note').value.trim() };
-    if (editingShift) payload.version = editingShift.version; else payload.userId = selectedUserId;
+    const submittedShift = editingShift;
+    if (submittedShift) { payload.version = submittedShift.version; payload.reason = $('#shift-reason').value.trim(); } else payload.userId = selectedUserId;
     try {
+      if (submittedShift && payload.reason.length < 3) throw new Error('Укажите причину изменения — не менее 3 символов.');
       if (payload.endedAt != null && payload.endedAt <= payload.startedAt) throw new Error('Конец смены должен быть позже её начала.');
-      await mutate(async () => { await api(editingShift ? `/api/shifts/${encodeURIComponent(editingShift.id)}` : '/api/shifts', { method: editingShift ? 'PATCH' : 'POST', body: payload }); await loadDashboard(); $('#shift-dialog').close(); }, 'Смена сохранена.');
-    } catch (error) { $('#shift-error').textContent = error.status === 409 ? `${error.message} Закройте форму и откройте смену заново, чтобы получить актуальные данные.` : error.message; if (error.status === 409) await loadDashboard().catch(() => {}); }
+      await mutate(async () => {
+        const result = await api(submittedShift ? `/api/shifts/${encodeURIComponent(submittedShift.id)}` : '/api/shifts', { method: submittedShift ? 'PATCH' : 'POST', body: payload });
+        if (result.shift) cacheShifts([result.shift]);
+        $('#shift-dialog').close();
+        try { await loadDashboard(); } catch { notify('Смена сохранена. Обновление остальных данных пока недоступно.', true); }
+      }, 'Смена сохранена.');
+    } catch (error) {
+      $('#shift-error').textContent = [404, 409].includes(error.status) ? `${error.message} Закройте форму и откройте смену заново, чтобы получить актуальные данные.` : error.message;
+      if ([404, 409].includes(error.status)) {
+        if (submittedShift) shiftCache.delete(String(submittedShift.id));
+        await Promise.allSettled([loadDashboard(), refreshPlanning()]);
+      }
+    }
   });
+  $('#absence-form').addEventListener('submit', async event => {
+    event.preventDefault(); $('#absence-error').textContent = '';
+    if (!isAdmin()) return;
+    const payload = { userId: absenceUserId, startDate: $('#absence-start').value, endDate: $('#absence-end').value, type: $('#absence-type').value, note: $('#absence-note').value.trim() };
+    try {
+      if (!payload.startDate || !payload.endDate || payload.startDate > payload.endDate) throw new Error('Последний день должен быть не раньше первого.');
+      await mutate(async () => { await api('/api/absences', { method: 'POST', body: payload }); $('#absence-dialog').close(); }, 'Отсутствие добавлено в календарь.');
+    } catch (error) { $('#absence-error').textContent = error.message; }
+  });
+  $('#calendar-month').addEventListener('change', async () => { resetCalendarView(); await loadCalendar(); });
+  $('#calendar-grid').addEventListener('keydown', event => {
+    const button = event.target.closest('[data-action="calendar-day"]'); if (!button) return;
+    const buttons = [...$('#calendar-grid').querySelectorAll('[data-action="calendar-day"]')], index = buttons.indexOf(button);
+    const offsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+    if (offsets[event.key] != null) { const target = buttons[index + offsets[event.key]]; if (target) { event.preventDefault(); target.focus(); } }
+  });
+  $('#timesheet-filter-form').addEventListener('submit', async event => { event.preventDefault(); invalidateTimesheet(); await loadTimesheet(); });
+  ['#timesheet-month', '#timesheet-scope'].forEach(selector => $(selector).addEventListener('change', async () => { invalidateTimesheet(); renderAccount(); await loadTimesheet(); }));
+  window.addEventListener('afterprint', () => { document.body.classList.remove('printing-timesheet'); });
   $('#report-filter-form').addEventListener('submit', async event => { event.preventDefault(); try { await loadReport(); } catch (error) { notify(error.message, true); } });
   ['#history-from', '#history-to', '#history-status'].forEach(selector => $(selector).addEventListener('change', renderHistory));
   $('#employee-search').addEventListener('input', renderEmployees); $('#show-archived').addEventListener('change', renderEmployees);
