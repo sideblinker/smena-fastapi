@@ -1,0 +1,644 @@
+{% from "components.html" import icon, empty, pagination, hidden_filters, shift_table with context %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#08090c">
+<meta name="description" content="Смена — учёт рабочего времени команды, смен, перерывов и графиков.">
+  <title>Смена — рабочее время команды</title>
+  <link rel="preload" href="fonts/Onest.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/accents.css?v=timeline-rights-2">
+<link rel="stylesheet" href="css/planning.css?v=requests-1">
+<script src="js/app.js?v=ssr-1" defer>
+</script>
+<script src="js/effects.js?v=local-bands-restore-1" defer>
+</script>
+  <link rel="stylesheet" href="css/ssr.css?v=ssr-1">
+</head>
+<body data-view="{{ view }}">
+  {% include "icons.html" %}
+
+  <main id="auth-screen" class="auth-screen"{% if session.user %} hidden{% endif %}>
+    <section class="auth-story">
+      <a class="brand" href="/">
+<span class="brand-mark">
+<svg class="icon">
+<use href="#i-clock"/>
+</svg>
+</span>
+<span>
+<span class="brand-name">смена.</span>
+<span class="brand-caption">ВРЕМЯ ПОД КОНТРОЛЕМ</span>
+</span>
+</a>
+      <div class="auth-story-copy">
+<span class="auth-kicker">РАБОТА В СВОЁМ РИТМЕ</span>
+<h1>Время <em>для главного.</em>
+</h1>
+<p>Смены, перерывы и команда.<br>Всё на своих местах.</p>
+</div>
+      <div class="auth-wordmark kinetic-word" aria-hidden="true">
+<span>с</span>
+<span>м</span>
+<span>е</span>
+<span>н</span>
+<span>а</span>
+<span>.</span>
+</div>
+      <span class="auth-story-footer">СМЕНА · УЧЁТ РАБОЧЕГО ВРЕМЕНИ</span>
+    </section>
+    <section class="auth-panel">
+<div class="auth-card">
+      <span class="auth-lock">
+<svg class="icon">
+<use href="#i-shield"/>
+</svg>
+</span>
+<div class="eyebrow" id="auth-eyebrow">{{ "ПЕРВЫЙ ЗАПУСК" if session.setupRequired else "ВАШ ЛИЧНЫЙ КАБИНЕТ" }}</div>
+<h2 id="auth-title">{{ "Добро пожаловать, Адиль" if session.setupRequired else "С возвращением" }}</h2>
+<p id="auth-description" class="auth-description">{{ "Создайте пароль администратора для входа в Смену." if session.setupRequired else "Войдите, чтобы продолжить свой рабочий день." }}</p>
+      <form id="auth-form" method="post" action="/api/login">
+        <div class="field">
+<label for="auth-username">Логин</label>
+<input id="auth-username" name="username"{% if session.setupRequired %} value="{{ session.adminLogin }}" readonly{% endif %} autocomplete="username" required maxlength="40" placeholder="Введите логин">
+</div>
+        <div class="field">
+<label for="auth-password" id="auth-password-label">{{ "Пароль — от 10 символов" if session.setupRequired else "Пароль" }}</label>
+<input type="password" id="auth-password" name="password" required{% if session.setupRequired %} minlength="10"{% endif %} maxlength="128" autocomplete="current-password" placeholder="Введите пароль">
+</div>
+        <div class="field" id="auth-confirm-field"{% if not session.setupRequired %} hidden{% endif %}>
+<label for="auth-confirm">Повторите пароль</label>
+<input type="password" id="auth-confirm"{% if session.setupRequired %} required{% endif %} maxlength="128" autocomplete="new-password">
+</div>
+        <p class="form-error" id="auth-error" role="alert">
+</p>
+<button class="button dark auth-submit" type="submit" id="auth-submit">{{ "Создать кабинет" if session.setupRequired else "Войти в кабинет" }} {{ icon("arrow") }}</button>
+      </form>
+      <div id="server-help" hidden>
+<p>Откройте файл <strong>Запустить.cmd</strong> в папке проекта. Оставьте окно сервера открытым и перейдите по кнопке ниже.</p>
+<a class="button dark auth-submit" href="http://127.0.0.1:8000">Открыть Смену на сервере <svg class="icon">
+<use href="#i-arrow"/>
+</svg>
+</a>
+</div>
+      <button class="button auth-retry" id="auth-retry" data-action="retry" hidden>Повторить подключение</button>
+      <p class="auth-footnote" id="auth-footnote">Доступ сотрудникам предоставляет администратор.</p>
+    </div>
+</section>
+  </main>
+
+  <div id="app" class="app-shell"{% if not session.user %} hidden{% endif %}>
+    <aside class="sidebar">
+      <a class="brand" href="/">
+<span class="brand-mark">
+<svg class="icon">
+<use href="#i-clock"/>
+</svg>
+</span>
+<span>
+<span class="brand-name">смена.</span>
+<span class="brand-caption">ВРЕМЯ ПОД КОНТРОЛЕМ</span>
+</span>
+</a>
+      <div class="nav-label" id="nav-role">{{ "УПРАВЛЕНИЕ КОМАНДОЙ" if is_admin else "ЛИЧНЫЙ КАБИНЕТ" }}</div>
+      <nav class="nav-list" aria-label="Основная навигация">
+        <a class="nav-link{% if view == 'overview' %} active{% endif %}" data-view="overview" href="{{ nav_url('overview') }}">
+<svg class="icon">
+<use href="#i-grid"/>
+</svg>Обзор</a>
+        <a class="nav-link{% if view == 'history' %} active{% endif %}" data-view="history" href="{{ nav_url('history') }}">
+<svg class="icon">
+<use href="#i-history"/>
+</svg>История смен</a>
+        <a class="nav-link{% if view == 'calendar' %} active{% endif %}" data-view="calendar" href="{{ nav_url('calendar') }}">
+<svg class="icon">
+<use href="#i-calendar"/>
+</svg>Календарь</a>
+        <a class="nav-link{% if view == 'requests' %} active{% endif %}" data-view="requests" href="{{ nav_url('requests') }}">
+<svg class="icon">
+<use href="#i-check"/>
+</svg>Заявки<span id="requests-badge" class="requests-badge"{% if not pending_count %} hidden{% endif %}>{{ pending_count or "" }}</span>
+</a>
+        <a class="nav-link{% if view == 'employees' %} active{% endif %}" data-view="employees" href="{{ nav_url('employees') }}" data-admin{% if not is_admin %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-users"/>
+</svg>Сотрудники</a>
+        <a class="nav-link{% if view == 'reports' %} active{% endif %}" data-view="reports" href="{{ nav_url('reports') }}" data-permission="view_reports"{% if not can("view_reports") %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-chart"/>
+</svg>Отчёты</a>
+        <a class="nav-link{% if view == 'timesheet' %} active{% endif %}" data-view="timesheet" href="{{ nav_url('timesheet') }}" data-permission="view_reports"{% if not can("view_reports") %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-grid"/>
+</svg>Табель</a>
+        <a class="nav-link{% if view == 'audit' %} active{% endif %}" data-view="audit" href="{{ nav_url('audit') }}" data-admin{% if not is_admin %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-shield"/>
+</svg>Журнал действий</a>
+      </nav>
+      <div class="sidebar-bottom">
+<div class="sidebar-message">
+<svg class="icon">
+<use href="#i-sun"/>
+</svg>
+<p>Каждая минута<br>имеет значение.</p>
+<span>Работайте в своём ритме.</span>
+</div>
+<div class="storage-note">
+<span class="storage-dot">
+</span>
+<span id="storage-status">Данные на сервере</span>
+</div>
+<button class="profile-button" data-action="profile">
+<span class="avatar" data-avatar>{{ session.user.name[:1] if session.user else "" }}</span>
+<span class="profile-copy">
+<span class="profile-name" data-account-name>{{ session.user.name if session.user else "" }}</span>
+<span class="profile-role" data-account-role>{{ "Администратор" if is_admin else "Сотрудник" }}</span>
+</span>
+<svg class="icon">
+<use href="#i-arrow"/>
+</svg>
+</button>
+</div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+<div class="breadcrumb">
+<span id="breadcrumb-role">{{ "Администратор" if is_admin else "Личный кабинет" }}</span>
+<span>/</span>
+<strong id="breadcrumb-current">{{ view_names[view] }}</strong>
+</div>
+<div class="topbar-actions">
+<span class="date-chip">
+<svg class="icon">
+<use href="#i-calendar"/>
+</svg>
+<span id="current-date">{{ fmt.short_date(now) }}</span>
+</span>
+<button class="avatar header-avatar" data-action="profile" aria-label="Профиль и пароль" data-avatar>{{ session.user.name[:1] if session.user else "" }}</button>
+<button class="button small" data-action="logout">Выйти</button>
+</div>
+</header>
+      <div id="connection-alert" class="storage-alert" role="alert" hidden>
+</div>
+      <div class="team-context" id="team-context"{% if not is_admin or view in ["employees", "requests", "audit"] or (view == "timesheet" and filters.scope == "all") %} hidden{% endif %}>
+<form id="selected-user-form" method="get" action="/" class="field server-filter-form">
+<input type="hidden" name="view" value="{{ view }}">
+{% for key, value in filters.items() if key not in ['view', 'userId', 'page'] and value not in [none, ''] %}
+<input type="hidden" name="{{ key }}" value="{{ value }}">
+{% endfor %}
+<label for="selected-user">Рабочее время сотрудника</label>
+<select id="selected-user" name="userId">{% for user in users %}<option value="{{ user.id }}"{% if user.id == userId %} selected{% endif %}>{{ user.name }}{{ " · архив" if user.archived else "" }}</option>{% endfor %}</select>
+<button class="button small" type="submit">Открыть</button>
+</form>
+<div>
+<span class="context-name" id="selected-name">{{ dashboard.user.name if dashboard else "" }}</span>
+<span class="context-meta" id="selected-meta">{{ dashboard.user.position if dashboard else "" }}{% if dashboard and dashboard.user.department %} · {{ dashboard.user.department }}{% endif %}</span>
+</div>
+<button class="button small" data-action="schedule">Настроить график</button>
+</div>
+      <section id="view-overview" class="section-view"{% if view != 'overview' %} hidden{% endif %}>
+        <div class="page-heading">
+<div>
+<div class="eyebrow">
+<span class="greeting-dot">
+</span> ВРЕМЯ ДЛЯ ХОРОШЕЙ РАБОТЫ</div>
+<h1>Рабочий <em>день.</em>
+</h1>
+<p id="overview-description">Время для хорошей работы. А подсчёты — на нас.</p>
+</div>
+<span class="pill" id="schedule-summary">{% if dashboard %}{{ dashboard.schedule.startTime }}–{{ dashboard.schedule.endTime }} · Перерыв {{ dashboard.schedule.breakMinutes }} мин{% endif %}</span>
+</div>
+        <div class="dashboard-grid">
+<article class="timer-card">
+<div class="timer-top">
+<span class="timer-label">ТЕКУЩАЯ СМЕНА</span>
+<span id="shift-status" class="status-badge {{ overview.metrics.status if overview else 'idle' }}">{{ overview.metrics.label if overview else "Не начата" }}</span>
+</div>
+<div class="timer-digits" id="timer" role="timer" aria-label="Отработанное время">{{ fmt.duration(overview.metrics.workMs) if overview else "00:00:00" }}</div>
+<p class="timer-subtitle" id="timer-subtitle">{% if overview and overview.active %}Начало в {{ fmt.clock_time(overview.active.startedAt) }}{% else %}Новый день — новые возможности.{% endif %}</p>
+<div class="timer-actions">
+<button id="start-button" class="button primary" data-action="start"{% if overview and overview.active %} hidden{% endif %}{% if not can("track_time") or not dashboard or not dashboard.user.active or dashboard.user.archived %} disabled{% endif %}>
+<svg class="icon">
+<use href="#i-play"/>
+</svg>Начать работу</button>
+<button id="pause-button" class="button primary" data-action="pause"{% if not overview or not overview.active or overview.metrics.status == "break" %} hidden{% endif %}{% if not can("track_time") %} disabled{% endif %}>
+<svg class="icon">
+<use href="#i-coffee"/>
+</svg>На перерыв</button>
+<button id="resume-button" class="button primary" data-action="resume"{% if not overview or overview.metrics.status != "break" %} hidden{% endif %}{% if not can("track_time") %} disabled{% endif %}>
+<svg class="icon">
+<use href="#i-play"/>
+</svg>Продолжить</button>
+<button id="finish-button" class="button ghost" data-action="finish"{% if not overview or not overview.active or not can("track_time") %} disabled{% endif %}>
+<svg class="icon">
+<use href="#i-stop"/>
+</svg>Завершить</button>
+</div>
+<div class="timer-progress">
+<div class="progress-labels">
+<span>Рабочий ритм</span>
+<span id="progress-caption">{% if overview %}{{ fmt.hours_number(overview.metrics.workMs) }} из {{ fmt.hours_number(overview.plannedMs) }} часов{% endif %}</span>
+</div>
+<div class="progress-track" role="progressbar" aria-label="Выполнение рабочего дня" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ overview.progress|round|int if overview else 0 }}" id="shift-progress">
+<div class="progress-fill" id="progress-fill" style="width:{{ overview.progress if overview else 0 }}%">
+</div>
+</div>
+</div>
+</article>
+<article class="card today-card">
+<div class="card-header">
+<h2>События дня</h2>
+<span class="today-date" id="today-label">{{ fmt.short_date(now) }}</span>
+</div>
+<div id="timeline" class="timeline">{% if overview %}{% include "timeline.html" %}{% endif %}</div>
+</article>
+</div>
+        <div class="stats-grid">
+          <article class="stat-card">
+<div class="stat-top">
+<span class="stat-label">Сегодня</span>
+<span class="stat-icon">
+<svg class="icon">
+<use href="#i-clock"/>
+</svg>
+</span>
+</div>
+<div class="stat-value" id="stat-today">{{ fmt.readable(overview.today.workMs) if overview else "0 ч 00 мин" }}</div>
+<div class="stat-note" id="stat-today-note">{{ "Рабочее время без перерывов" if overview and overview.today.workMs else "Ваш день ещё впереди" }}</div>
+</article>
+          <article class="stat-card lilac">
+<div class="stat-top">
+<span class="stat-label">За неделю</span>
+<span class="stat-icon">
+<svg class="icon">
+<use href="#i-chart"/>
+</svg>
+</span>
+</div>
+<div class="stat-value" id="stat-week">{{ fmt.readable(overview.week.workMs) if overview else "0 ч 00 мин" }}</div>
+<div class="stat-note">С понедельника по сегодня</div>
+</article>
+          <article class="stat-card peach">
+<div class="stat-top">
+<span class="stat-label">За месяц</span>
+<span class="stat-icon">
+<svg class="icon">
+<use href="#i-calendar"/>
+</svg>
+</span>
+</div>
+<div class="stat-value" id="stat-month">{{ fmt.readable(overview.month.workMs) if overview else "0 ч 00 мин" }}</div>
+<div class="stat-note">Рабочее время без перерывов</div>
+</article>
+          <article class="stat-card mint">
+<div class="stat-top">
+<span class="stat-label">Перерывы сегодня</span>
+<span class="stat-icon">
+<svg class="icon">
+<use href="#i-coffee"/>
+</svg>
+</span>
+</div>
+<div class="stat-value" id="stat-breaks">{{ fmt.readable(overview.today.breakMs) if overview else "0 ч 00 мин" }}</div>
+<div class="stat-note">Паузы тоже часть работы</div>
+</article>
+        </div>
+        <div class="bottom-grid">
+<article class="card week-card">
+<div class="card-header">
+<div>
+<h2>Рабочая неделя</h2>
+<p class="card-subtitle" id="week-range">{% if overview %}{{ fmt.short_date(overview.weekDays[0].date) }} — {{ fmt.short_date(overview.weekDays[-1].date) }}{% endif %}</p>
+</div>
+<svg class="icon muted-icon">
+<use href="#i-chart"/>
+</svg>
+</div>
+<div class="chart" id="week-chart" aria-label="График рабочего времени за неделю">{% if overview %}{% include "week.html" %}{% endif %}</div>
+<div class="chart-footer">
+<span>
+<i class="legend-dot">
+</i> Рабочее время</span>
+<strong id="week-total">{{ fmt.readable(overview.week.workMs) if overview else "" }}</strong>
+</div>
+</article>
+<article class="card table-card">
+<div class="card-header">
+<h2>Последние смены</h2>
+<a class="text-button" data-view="history" href="{{ nav_url('history') }}">Все смены <svg class="icon">
+<use href="#i-arrow"/>
+</svg>
+</a>
+</div>
+<div id="recent-shifts">{% if overview %}{{ shift_table(overview.recent, true) }}{% endif %}</div>
+</article>
+</div>
+      </section>
+      <section id="view-history" class="section-view"{% if view != 'history' %} hidden{% endif %}>
+<div class="page-heading">
+<div>
+<div class="eyebrow">ВРЕМЯ В ДЕТАЛЯХ</div>
+<h1>История <em>смен.</em>
+</h1>
+<p>Начала, перерывы и завершения — в одном месте.</p>
+</div>
+<div class="heading-actions">
+<button class="button" data-action="export-history" data-permission="export_reports"{% if not can("export_reports") %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-download"/>
+</svg>CSV</button>
+<button class="button dark" data-action="add-shift" data-permission="edit_own_shifts"{% if not can("edit_own_shifts") %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-plus"/>
+</svg>Добавить смену</button>
+</div>
+</div>
+<div class="card">
+<form id="history-filter-form" class="filter-row server-filter-form" method="get" action="/">{{ hidden_filters("history") }}<div class="field">
+<label for="history-from">С даты</label>
+<input type="date" id="history-from" name="from" value="{{ filters["from"] }}">
+</div>
+<div class="field">
+<label for="history-to">По дату</label>
+<input type="date" id="history-to" name="to" value="{{ filters.to }}">
+</div>
+<div class="field">
+<label for="history-status">Статус</label>
+<select id="history-status" name="status">
+<option value="all"{% if filters.status == "all" %} selected{% endif %}>Все смены</option>
+<option value="finished"{% if filters.status == "finished" %} selected{% endif %}>Завершённые</option>
+<option value="active"{% if filters.status == "active" %} selected{% endif %}>Текущая смена</option>
+</select>
+</div>
+<button class="button small" type="submit">Показать</button>
+<a class="button small" href="{{ nav_url('history') }}">Сбросить</a>
+</form>
+<p class="filter-message" id="history-summary">{% if history %}Найдено смен: {{ history.pagination.total }} · На странице: {{ history.shifts|length }}{% endif %}</p>
+<div id="history-table">{% if history %}{{ shift_table(history.shifts) }}{{ pagination(history) }}{% endif %}</div>
+</div>
+</section>
+      <section id="view-employees" class="section-view"{% if view != 'employees' %} hidden{% endif %}>
+<div class="page-heading">
+<div>
+<div class="eyebrow">КОМАНДА В ОДНОМ ПРОСТРАНСТВЕ</div>
+<h1>Ваша <em>команда.</em>
+</h1>
+<p>Профили, доступ и рабочие графики вашей команды.</p>
+</div>
+<button class="button dark" data-action="add-user">
+<svg class="icon">
+<use href="#i-plus"/>
+</svg>Добавить сотрудника</button>
+</div>
+<section class="card team-live-card" aria-labelledby="team-live-title">
+<div class="card-header">
+<div>
+<div class="eyebrow">КОМАНДА СЕЙЧАС</div>
+<h2 id="team-live-title">Кто на работе</h2>
+<p class="card-subtitle" id="team-live-updated">По состоянию на {{ fmt.clock_time(now) }}</p>
+</div>
+<button class="button small" data-action="refresh-team">Обновить</button>
+</div>
+<div id="team-live-filters" class="team-live-filters" aria-label="Фильтр по статусу">
+{% if team %}{% include "team_filters.html" %}{% endif %}
+</div>
+<div id="team-live-feedback" class="planning-feedback" role="status">
+</div>
+<div id="team-live-members" class="team-live-members" aria-busy="false">{% if team %}{% include "team.html" %}{% endif %}</div>
+</section>
+<div class="team-stats" id="team-stats">{% if employees %}{% include "team_totals.html" %}{% endif %}</div>
+<div class="card">
+<form id="employee-filter-form" class="employee-toolbar server-filter-form" method="get" action="/">{{ hidden_filters("employees") }}<div class="field grow">
+<label for="employee-search">Поиск по имени, логину или отделу</label>
+<input id="employee-search" name="search" value="{{ filters.search }}" type="search" placeholder="Найти сотрудника…">
+</div>
+<label class="check-label">
+<input type="checkbox" id="show-archived" name="includeArchived" value="1"{% if filters.includeArchived == "1" %} checked{% endif %}>Показывать архив</label>
+<button class="button small" type="submit">Найти</button>
+</form>
+<div id="employees-table">{% if employees %}{% include "employees.html" %}{% endif %}</div>
+</div>
+</section>
+      <section id="view-reports" class="section-view"{% if view != 'reports' %} hidden{% endif %}>
+<div class="page-heading">
+<div>
+<div class="eyebrow">ОТ ЗАПИСЕЙ К РЕЗУЛЬТАТАМ</div>
+<h1>Отчёты <em>по времени.</em>
+</h1>
+<p>Итоги рабочего времени за выбранный период.</p>
+</div>
+<button class="button dark" data-action="export-report" data-permission="export_reports"{% if not can("export_reports") %} hidden{% endif %}>
+<svg class="icon">
+<use href="#i-download"/>
+</svg>Скачать CSV</button>
+</div>
+<form id="report-filter-form" class="card report-filter server-filter-form" method="get" action="/">{{ hidden_filters("reports") }}<div class="field">
+<label for="report-from">С даты</label>
+<input type="date" id="report-from" name="from" value="{{ filters["from"] }}" required>
+</div>
+<div class="field">
+<label for="report-to">По дату</label>
+<input type="date" id="report-to" name="to" value="{{ filters.to }}" required>
+</div>
+<button class="button" type="submit">Показать</button>
+</form>
+<div class="report-grid">
+<article class="card report-card">
+<div class="stat-label">Отработано</div>
+<div class="report-number" id="report-hours">{{ fmt.readable(report.totals.workMs) if report else "—" }}</div>
+<div class="stat-note">Без учёта перерывов</div>
+</article>
+<article class="card report-card">
+<div class="stat-label">Завершено смен</div>
+<div class="report-number" id="report-count">{{ report.totals.completedShifts if report else "—" }}</div>
+<div class="stat-note">За выбранный период</div>
+</article>
+<article class="card report-card">
+<div class="stat-label">Средняя смена</div>
+<div class="report-number" id="report-average">{{ fmt.readable(report.totals.averageMs) if report else "—" }}</div>
+<div class="stat-note">По завершённым сменам</div>
+</article>
+</div>
+<article class="card table-card">
+<div class="card-header">
+<h2>Учёт по дням</h2>
+<span class="card-subtitle" id="report-caption">Казахстан · UTC+5</span>
+</div>
+<div id="report-table">{% if report %}{% include "report.html" %}{% endif %}</div>
+</article>
+</section>
+      <section id="view-audit" class="section-view"{% if view != 'audit' %} hidden{% endif %}>
+<div class="page-heading">
+<div>
+<div class="eyebrow">ПРОЗРАЧНОЕ УПРАВЛЕНИЕ</div>
+<h1>Журнал <em>действий.</em>
+</h1>
+<p>Кто и когда изменял сотрудников, смены и права доступа.</p>
+</div>
+<button class="button" data-action="refresh-audit">Обновить</button>
+</div>
+<div class="card" id="audit-table">{% if audit %}{% include "audit.html" %}{% endif %}</div>
+</section>
+      <section id="view-calendar" class="section-view"{% if view != 'calendar' %} hidden{% endif %} aria-label="Календарь рабочего времени">
+        <div class="page-heading">
+<div>
+<div class="eyebrow">МЕСЯЦ В ОДНОМ ВЗГЛЯДЕ</div>
+<h1>Календарь <em>работы.</em>
+</h1>
+<p id="calendar-person">{% if calendar %}{{ calendar.user.name }} · {{ fmt.month_label(calendar.month) }}{% else %}План, факт и время для отдыха.{% endif %}</p>
+</div>
+<div class="heading-actions">
+<button class="button" data-action="calendar-today">Этот месяц</button>
+<button class="button dark" data-action="add-absence" data-admin{% if not is_admin %} hidden{% endif %}>Добавить отсутствие</button>
+<button class="button dark" data-action="new-request" data-calendar-request data-employee{% if is_admin %} hidden{% endif %}>Запросить отпуск / отгул</button>
+</div>
+</div>
+        <form id="calendar-filter-form" class="planning-toolbar server-filter-form" method="get" action="/">{{ hidden_filters("calendar") }}<div class="month-controls">
+<button class="button month-arrow" type="button" data-action="calendar-prev" aria-label="Предыдущий месяц">←</button>
+<div class="field">
+<label for="calendar-month">Месяц календаря</label>
+<input id="calendar-month" name="month" value="{{ filters.month }}" type="month" required>
+</div>
+<button class="button month-arrow" type="button" data-action="calendar-next" aria-label="Следующий месяц">→</button>
+</div>
+<button class="button" type="submit">Показать</button>
+<p class="planning-note">План по текущему графику · Ночные смены — по дате начала</p>
+</form>
+        <div id="calendar-totals" class="planning-totals" aria-label="Итоги месяца">
+{% if calendar %}{% for label, key, kind in [('План месяца','plannedMs','plan'),('Отработано','workMs','fact'),('Опоздания','lateMs','late'),('Сверх плана','overtimeMs','extra')] %}
+<article class="planning-total {{ kind }}"><span>{{ label }}</span><strong>{{ fmt.readable(calendar.days|sum(attribute=key)) }}</strong></article>
+{% endfor %}{% endif %}</div><div id="calendar-feedback" class="planning-feedback" role="status" aria-live="polite">
+</div>
+        <div class="calendar-shell card">
+<div class="calendar-weekdays" aria-hidden="true">
+<span>Пн</span>
+<span>Вт</span>
+<span>Ср</span>
+<span>Чт</span>
+<span>Пт</span>
+<span>Сб</span>
+<span>Вс</span>
+</div>
+<div id="calendar-grid" class="calendar-grid" aria-label="Дни месяца" aria-busy="false">{% if calendar %}{% include "calendar.html" %}{% endif %}</div>
+<div class="calendar-legend">
+<span>
+<i class="legend-mark workday">
+</i>Рабочий день</span>
+<span>
+<i class="legend-mark finished">
+</i>Есть отработанное время</span>
+<span>
+<i class="legend-mark absence">
+</i>Отсутствие</span>
+<span>
+<i class="legend-mark late">
+</i>Опоздание</span>
+<span>
+<i class="legend-mark day-off">
+</i>Выходной</span>
+</div>
+</div>
+      </section>
+      <section id="view-requests" class="section-view"{% if view != 'requests' %} hidden{% endif %} aria-label="Заявки на отпуск и отгул">
+        <div class="page-heading">
+<div>
+<div class="eyebrow">ВРЕМЯ ДЛЯ СЕБЯ</div>
+<h1>Планы <em>на отдых.</em>
+</h1>
+<p id="requests-description">{{ "Рассматривайте заявки команды на отпуск и отгул." if is_admin else "Отправьте заявку и следите за решением администратора." }}</p>
+</div>
+<button class="button dark" data-action="new-request">
+<svg class="icon">
+<use href="#i-plus"/>
+</svg>Подать заявку</button>
+</div>
+        <div class="card requests-workspace">
+<form id="request-filter-form" class="requests-toolbar server-filter-form" method="get" action="/">{{ hidden_filters("requests") }}<div class="field">
+<label for="requests-filter">Статус заявки</label>
+<select id="requests-filter" name="status">
+<option value="all"{% if filters.status == "all" %} selected{% endif %}>Все заявки</option>
+<option value="pending"{% if filters.status == "pending" %} selected{% endif %}>На рассмотрении</option>
+<option value="approved"{% if filters.status == "approved" %} selected{% endif %}>Одобренные</option>
+<option value="rejected"{% if filters.status == "rejected" %} selected{% endif %}>Отклонённые</option>
+<option value="cancelled"{% if filters.status == "cancelled" %} selected{% endif %}>Отменённые</option>
+</select>
+</div>
+<p id="requests-summary" class="requests-summary">{% if requests %}На рассмотрении: {{ requests.counts.pending }} · Одобрено: {{ requests.counts.approved }}{% endif %}</p>
+<button class="button small" type="submit">Показать</button>
+<button class="button small" type="button" data-action="refresh-requests">Обновить</button>
+</form>
+<div id="requests-feedback" class="planning-feedback" role="status">
+</div>
+<div id="requests-list" class="requests-list" aria-busy="false">{% if requests %}{% include "requests.html" %}{% endif %}</div>
+<p class="requests-footnote">После одобрения отпуск или отгул появится в календаре. До решения заявку можно отменить.</p>
+</div>
+      </section>
+      <section id="view-timesheet" class="section-view"{% if view != 'timesheet' %} hidden{% endif %} aria-label="Месячный табель">
+        <div class="page-heading">
+<div>
+<div class="eyebrow">ИТОГИ ДЛЯ КОМАНДЫ</div>
+<h1>Табель <em>за месяц.</em>
+</h1>
+<p>Рабочие часы по дням, план и отклонения.</p>
+</div>
+<button class="button dark" data-action="print-timesheet" id="print-timesheet"{% if not timesheet %} disabled{% endif %}>Печать / PDF</button>
+</div>
+        <form id="timesheet-filter-form" class="card planning-toolbar server-filter-form" method="get" action="/">{{ hidden_filters("timesheet") }}<div class="field">
+<label for="timesheet-month">Отчётный месяц</label>
+<input type="month" id="timesheet-month" name="month" value="{{ filters.month }}" required>
+</div>
+<div class="field" data-admin{% if not is_admin %} hidden{% endif %}>
+<label for="timesheet-scope">Сотрудники</label>
+<select id="timesheet-scope" name="scope">
+<option value="selected"{% if filters.scope == "selected" %} selected{% endif %}>Выбранный сотрудник</option>
+<option value="all"{% if filters.scope == "all" %} selected{% endif %}>Вся команда</option>
+</select>
+</div>
+<button class="button" type="submit">Показать табель</button>
+<p class="planning-note">План по текущему графику · Ночные смены — по дате начала</p>
+</form>
+        <div id="timesheet-feedback" class="planning-feedback" role="status" aria-live="polite">
+</div>
+<article id="timesheet-document" class="card timesheet-document">
+<div class="timesheet-heading">
+<div>
+<span class="eyebrow">СМЕНА · УЧЁТ РАБОЧЕГО ВРЕМЕНИ</span>
+<h2 id="timesheet-title">{{ "Табель · " ~ fmt.month_label(timesheet.month) if timesheet else "Месячный табель" }}</h2>
+<p id="timesheet-subtitle">{% if timesheet %}Сотрудников: {{ timesheet.rows|length }} · Казахстан, UTC+5{% endif %}</p>
+</div>
+<span id="timesheet-generated">{% if timesheet %}Сформирован {{ fmt.full_date(now) }}{% endif %}</span>
+</div>
+<div id="timesheet-table" class="timesheet-scroll">{% if timesheet %}{% include "timesheet.html" %}{% endif %}</div>
+<div id="timesheet-print-content" class="timesheet-print-content">{% if timesheet %}{% include "timesheet_print.html" %}{% endif %}</div>
+<div class="timesheet-legend">
+<span>Часы — фактически отработанное время</span>
+<span>В — выходной</span>
+<span>ОТ — отпуск</span>
+<span>ОГ — отгул</span>
+<span>О — другое отсутствие</span>
+<span>Н — смена не начата</span>
+<span>· — будущий рабочий день</span>
+</div>
+<p class="timesheet-footnote">План по текущему графику · Ночные смены — по дате начала. Время Казахстана, UTC+5. Документ для внутреннего учёта.</p>
+</article>
+      </section>
+      <footer class="footer">
+<span>Меньше рутины. Больше времени на главное.</span>
+<span>Смена · Казахстан · UTC+5</span>
+</footer>
+    </main>
+  </div>
+
+  {% include "dialogs.html" %}
+  <div class="toast" id="toast" role="status" aria-live="polite">
+</div>
+<noscript>
+<div class="noscript">Разделы, фильтры и страницы списков доступны без JavaScript. Для входа и изменения данных включите JavaScript.</div>
+</noscript>
+  <script id="smena-bootstrap" type="application/json">{{ bootstrap|tojson }}</script>
+</body>
+</html>

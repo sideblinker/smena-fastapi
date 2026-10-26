@@ -1,0 +1,4 @@
+<button type="button" class="team-status-chip selected" data-action="team-filter" data-status="all" aria-pressed="true"><i class="team-status-dot all" aria-hidden="true"></i><span>Все</span><strong>{{ team.members|length }}</strong></button>
+{% for key, label in fmt.TEAM_LABELS.items() %}
+<button type="button" class="team-status-chip" data-action="team-filter" data-status="{{ key }}" aria-pressed="false"><i class="team-status-dot {{ key }}" aria-hidden="true"></i><span>{{ label }}</span><strong>{{ team.members|selectattr('status', 'equalto', key)|list|length }}</strong></button>
+{% endfor %}

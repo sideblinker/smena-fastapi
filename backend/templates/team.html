@@ -1,0 +1,8 @@
+{% for member in team.members %}
+<article class="team-live-person">
+  <div class="team-live-person-header"><span class="avatar">{{ member.user.name[:1] }}</span><div><strong>{{ member.user.name }}</strong><span>{{ member.user.department or member.user.position or 'Сотрудник' }}</span></div><span class="team-live-status {{ member.status }}">{{ fmt.TEAM_LABELS[member.status] }}</span></div>
+  <div class="team-live-hours"><span>Сегодня <strong>{{ fmt.readable(member.day.workMs) }}</strong></span><span>План <strong>{{ fmt.hours_number(member.day.plannedMs) }} ч</strong></span></div>
+  <p class="team-live-caption">{% if member.activeShift %}Смена с {{ fmt.full_date(member.activeShift.startedAt) }}{% elif member.status == 'absence' %}{{ fmt.ABSENCE_LABELS[member.day.absence.type] }}{% else %}По графику сотрудника{% endif %}</p>
+  <a class="text-button" href="/?view=calendar&amp;userId={{ member.user.id }}">Открыть календарь {{ icon('arrow') }}</a>
+</article>
+{% else %}{{ empty('Команда пока пуста', 'Добавьте сотрудников, чтобы видеть их рабочее время.') }}{% endfor %}

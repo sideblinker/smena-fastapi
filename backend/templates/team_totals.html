@@ -1,0 +1,5 @@
+{% set members = users|rejectattr('role', 'equalto', 'admin')|list %}
+<div><strong>{{ members|rejectattr('archived')|list|length }}</strong><span>сотрудников</span></div>
+<div><strong>{{ members|rejectattr('archived')|selectattr('active')|list|length }}</strong><span>с доступом</span></div>
+<div><strong>{{ members|rejectattr('archived')|rejectattr('active')|list|length }}</strong><span>заблокировано</span></div>
+<div><strong>{{ members|selectattr('archived')|list|length }}</strong><span>в архиве</span></div>

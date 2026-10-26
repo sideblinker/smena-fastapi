@@ -7,6 +7,11 @@
   if (location.hash.startsWith('#setup=')) history.replaceState(null, '', `${location.pathname}${location.search}`);
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
+  // FastAPI supplies the first page and the state needed by interactive controls.
+  // The hosted static edition has no bootstrap and retains its SPA navigation.
+  const bootstrapElement = $('#smena-bootstrap');
+  const serverRendered = !!bootstrapElement;
+  let pageNavigating = false;
   const HOUR = 3600000, MINUTE = 60000, DAY = 24 * HOUR, ZONE = 'Asia/Qyzylorda';
   const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   const permissions = {
@@ -34,6 +39,63 @@
   let timesheetData = null, timesheetRequest = 0, timesheetReady = false, absenceUserId = null;
   let absenceRequests = null, requestsRequest = 0, requestDecision = null;
   const shiftCache = new Map();
+
+  function navigatePage(name = view, changes = {}, { replace = false } = {}) {
+    const url = new URL(location.href);
+    if (name !== view) url.search = '';
+    url.pathname = '/'; url.hash = '';
+    url.searchParams.set('view', name);
+    if (selectedUserId != null) url.searchParams.set('userId', String(selectedUserId));
+    url.searchParams.delete('page');
+    Object.entries(changes).forEach(([key, value]) => {
+      if (value == null || value === '') url.searchParams.delete(key);
+      else url.searchParams.set(key, String(value));
+    });
+    pageNavigating = true;
+    if (replace) location.replace(url.href); else location.assign(url.href);
+  }
+  function reloadPage() { pageNavigating = true; location.reload(); }
+  function returnToLogin() { pageNavigating = true; location.replace('/'); }
+  function submitPageFilter(element, changes = {}) {
+    const form = element.closest('form');
+    if (form?.method.toLowerCase() === 'get') {
+      const pageInput = form.elements.namedItem('page');
+      if (pageInput) pageInput.value = '1';
+      form.requestSubmit();
+    } else navigatePage(view, changes);
+  }
+  function normalizeShifts(shifts = []) {
+    return shifts.map(shift => ({ ...shift, startedAt: numericTime(shift.startedAt), endedAt: shift.endedAt == null ? null : numericTime(shift.endedAt), breaks: (shift.breaks || []).map(pause => ({ ...pause, startedAt: numericTime(pause.startedAt), endedAt: pause.endedAt == null ? null : numericTime(pause.endedAt) })) }));
+  }
+  async function initializeServerPage() {
+    try {
+      const initial = JSON.parse(bootstrapElement.textContent);
+      session = initial.session;
+      users = initial.users || (session.user ? [session.user] : []);
+      selectedUserId = initial.userId ?? session.user?.id ?? null;
+      view = initial.view || 'overview';
+      dashboard = initial.dashboard || { user: null, schedule: null, shifts: [] };
+      dashboard.shifts = normalizeShifts(dashboard.shifts);
+      syncClock(dashboard.serverNow != null ? dashboard : session);
+      cacheShifts(dashboard.shifts);
+      cacheShifts(normalizeShifts(initial.history?.shifts));
+      calendarData = initial.calendar || null;
+      if (calendarData) { calendarData.shifts = normalizeShifts(calendarData.shifts); cacheShifts(calendarData.shifts); }
+      absenceRequests = initial.requests || null;
+      teamData = initial.team || null;
+      timesheetData = initial.timesheet || null;
+      timesheetReady = !!timesheetData;
+      // Initial rows, headings and filters remain exactly as rendered by Jinja2.
+      // Only the running clock needs a client-side update.
+      if (session.user) {
+        renderTimer();
+        const oldView = location.hash.slice(1);
+        if (viewNames[oldView] && !new URLSearchParams(location.search).has('view') && oldView !== view) navigatePage(oldView, {}, { replace: true });
+      } else if (setupToken) await initialize();
+    } catch (error) {
+      connectionStatus(false, 'Не удалось подготовить страницу. Обновите её, чтобы повторить загрузку.');
+    }
+  }
 
   const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
@@ -99,8 +161,8 @@
       if (response.status === 401 && !allowUnauthorized && session.user && requestSessionToken === session.csrfToken) {
         session.user = null; dashboardRequest += 1;
         $$('dialog[open]').forEach(dialog => dialog.close());
-        showAuth();
-        void initialize();
+        if (serverRendered) returnToLogin();
+        else { showAuth(); void initialize(); }
       }
       const error = new Error(data.error || (response.status === 404 ? 'Сервер учёта не найден. Откройте Смену через файл запуска сервера.' : 'Не удалось выполнить запрос. Повторите попытку.'));
       error.code = data.code; error.status = response.status; throw error;
@@ -153,6 +215,7 @@
     $('#auth-footnote').textContent = setup ? 'Логин администратора: Adilium. Пароль задаёте только вы.' : 'Доступ сотрудникам предоставляет администратор.';
   }
   async function initialize() {
+    if (serverRendered && !setupToken) { returnToLogin(); return; }
     if (location.protocol === 'file:') {
       $('#auth-title').textContent = 'Запустите сервер Смены';
       $('#auth-description').textContent = 'Аккаунты и общая база данных работают через сервер. Открытия HTML-файла для входа недостаточно.';
@@ -170,6 +233,7 @@
   }
   async function enterApp() {
     selectedUserId = session.user.id;
+    if (serverRendered) { navigatePage('overview', {}, { replace: true }); return; }
     $('#auth-form').reset(); $('#auth-error').textContent = '';
     if (isAdmin()) await loadUsers(); else users = [session.user];
     $('#report-from').value = dateKey(monthStart(now())); $('#report-to').value = dateKey(now());
@@ -183,6 +247,7 @@
     if (view !== 'requests') await loadRequests({ quiet: true });
   }
   async function loadUsers() {
+    if (serverRendered && mutationBusy) return;
     if (!isAdmin()) return;
     const token = session.csrfToken;
     const data = await api('/api/users?includeArchived=1');
@@ -194,12 +259,13 @@
     renderEmployees();
   }
   async function loadDashboard() {
+    if (serverRendered && mutationBusy) return;
     if (!session.user || selectedUserId == null) return;
     const token = ++dashboardRequest;
     const result = await api(`/api/dashboard?${queryForUser({})}`);
     if (token !== dashboardRequest || !session.user) return;
     dashboard = result;
-    dashboard.shifts = (result.shifts || []).map(shift => ({ ...shift, startedAt: numericTime(shift.startedAt), endedAt: shift.endedAt == null ? null : numericTime(shift.endedAt), breaks: (shift.breaks || []).map(pause => ({ startedAt: numericTime(pause.startedAt), endedAt: pause.endedAt == null ? null : numericTime(pause.endedAt) })) }));
+    dashboard.shifts = normalizeShifts(result.shifts);
     cacheShifts(dashboard.shifts);
     renderDashboard();
   }
@@ -283,6 +349,7 @@
     }).join('')}</tbody></table></div>`;
   }
   function renderHistory() {
+    if (serverRendered) return;
     const from = $('#history-from').value, to = $('#history-to').value, status = $('#history-status').value;
     if (from && to && from > to) { $('#history-summary').textContent = 'Дата начала должна быть не позже даты окончания.'; $('#history-table').innerHTML = ''; return; }
     const shifts = sortedShifts().filter(shift => (!from || dateKey(shift.startedAt) >= from) && (!to || dateKey(shift.startedAt) <= to) && (status === 'all' || (status === 'finished' ? shift.endedAt != null : shift.endedAt == null)));
@@ -290,6 +357,7 @@
     $('#history-table').innerHTML = shifts.length ? shiftTable(shifts) : emptyState('Подходящих смен пока нет', 'Измените фильтры или добавьте первую смену.');
   }
   function renderDashboard() {
+    if (serverRendered) { renderTimer(); return; }
     if (!dashboard.user) return;
     $('#selected-name').textContent = dashboard.user.name; $('#selected-meta').textContent = [dashboard.user.position, dashboard.user.department].filter(Boolean).join(' · ') || 'Профиль сотрудника';
     $('#overview-description').textContent = isAdmin() ? `Рабочее время: ${dashboard.user.name}. Управляйте сменами и перерывами.` : 'Время для хорошей работы. А подсчёты — на нас.';
@@ -299,6 +367,7 @@
     $('#recent-shifts').innerHTML = shiftTable(sortedShifts().slice(0, 3), true);
   }
   function renderEmployees() {
+    if (serverRendered) return;
     if (!isAdmin()) return;
     const search = $('#employee-search').value.trim().toLocaleLowerCase('ru-RU'), includeArchived = $('#show-archived').checked;
     const team = users.filter(user => user.role !== 'admin');
@@ -323,7 +392,8 @@
   }
   async function exportReport(historyExport = false) {
     const shifts = sortedShifts();
-    const from = historyExport ? ($('#history-from').value || (shifts.length ? dateKey(Math.max(shifts.at(-1).startedAt, dayStart(now()) - 365 * DAY)) : dateKey(monthStart(now())))) : $('#report-from').value;
+    const defaultHistoryStart = serverRendered ? dateKey(dayStart(now()) - 365 * DAY) : (shifts.length ? dateKey(Math.max(shifts.at(-1).startedAt, dayStart(now()) - 365 * DAY)) : dateKey(monthStart(now())));
+    const from = historyExport ? ($('#history-from').value || defaultHistoryStart) : $('#report-from').value;
     const to = historyExport ? ($('#history-to').value || dateKey(now())) : $('#report-to').value;
     validateRange(from, to);
     const blob = await api(`/api/export?${queryForUser({ from, to })}`, { binary: true });
@@ -416,6 +486,7 @@
     if (!validMonth(value)) return;
     const date = new Date(`${value}-01T12:00:00Z`); date.setUTCMonth(date.getUTCMonth() + delta);
     $('#calendar-month').value = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}`;
+    if (serverRendered) { submitPageFilter($('#calendar-month'), { month: $('#calendar-month').value }); return; }
     resetCalendarView(); await loadCalendar();
   }
   function openAbsence() {
@@ -435,7 +506,13 @@
     if (!quiet) planningFeedback('#requests-feedback', 'Загружаем заявки…');
     const current = () => sequence === requestsRequest && session.user && String(session.user.id) === String(userId) && session.csrfToken === token && $('#requests-filter').value === status;
     try {
-      const result = await api(`/api/absence-requests?${new URLSearchParams({ status })}`);
+      const params = new URLSearchParams({ status });
+      if (serverRendered) {
+        const currentQuery = new URLSearchParams(location.search);
+        params.set('page', currentQuery.get('page') || '1');
+        params.set('pageSize', currentQuery.get('pageSize') || '20');
+      }
+      const result = await api(`/api/absence-requests?${params}`);
       if (!current()) return false;
       absenceRequests = result; planningFeedback('#requests-feedback'); renderRequests(); return true;
     } catch (error) {
@@ -451,6 +528,7 @@
     return `<strong>${escapeHTML(request.user?.name || session.user?.name || 'Сотрудник')}</strong><span>${escapeHTML(absenceLabels[request.type] || 'Отсутствие')} · ${escapeHTML(requestDates(request))}</span>${request.note ? `<p>${escapeHTML(request.note)}</p>` : '<p class="request-no-note">Комментарий к заявке не добавлен.</p>'}`;
   }
   function renderRequests() {
+    if (serverRendered) return;
     if (!absenceRequests || !session.user) return;
     const list = $('#requests-list'), focused = list.contains(document.activeElement) ? document.activeElement.closest('[data-action]') : null;
     const focusKey = focused ? { action: focused.dataset.action, id: focused.dataset.id } : null;
@@ -600,6 +678,7 @@
     return escapeHTML(lines.join('\n') || 'Действие выполнено успешно.');
   }
   async function loadAudit() {
+    if (serverRendered) { reloadPage(); return; }
     if (!isAdmin()) return;
     const token = session.csrfToken;
     const data = await api('/api/audit');
@@ -612,6 +691,7 @@
   }
   async function setView(name) {
     if (!viewNames[name] || (!isAdmin() && ['employees', 'audit'].includes(name)) || (['reports', 'timesheet'].includes(name) && !can('view_reports'))) name = 'overview';
+    if (serverRendered) { navigatePage(name); return; }
     const previousView = view;
     view = name;
     document.body.dataset.view = name;
@@ -629,12 +709,26 @@
     if (name === 'audit') await loadAudit();
   }
   async function refresh() {
-    if (!session.user || refreshBusy || mutationBusy || document.hidden) return;
+    if (!session.user || refreshBusy || mutationBusy || document.hidden || pageNavigating) return;
     refreshBusy = true;
     const refreshToken = session.csrfToken;
     try {
       const latest = await api('/api/session');
       if (!session.user || session.csrfToken !== refreshToken) return;
+      if (serverRendered) {
+        if (!latest.user) { session = latest; returnToLogin(); return; }
+        const permissionKey = user => JSON.stringify([user.id, user.role, [...(user.permissions || [])].sort(), user.active, user.archived]);
+        if (latest.csrfToken !== refreshToken || permissionKey(latest.user) !== permissionKey(session.user)) { reloadPage(); return; }
+        session = latest;
+        // Do not replace paged server tables, reset filters, or interrupt an edit.
+        if ($('dialog[open]') || document.activeElement?.closest('form') || document.body.classList.contains('printing-timesheet')) return;
+        if (view === 'overview') await loadDashboard();
+        if (view === 'employees') await loadTeamStatus({ quiet: true });
+        if (view === 'calendar') await loadCalendar({ quiet: true });
+        if (view === 'timesheet') await loadTimesheet({ quiet: true });
+        if (view === 'reports') await loadReport();
+        return;
+      }
       if (!latest.user) { session = latest; showAuth(); return; }
       if (String(latest.user.id) !== String(session.user.id) || latest.csrfToken !== refreshToken) {
         session = latest; showAuth(); await enterApp(); return;
@@ -654,7 +748,14 @@
     if (mutationBusy) return false;
     mutationBusy = true; renderTimer();
     $$('dialog[open] button, #auth-submit').forEach(button => { button.disabled = true; });
-    try { await task(); await refreshPlanning({ forceDetails: true }); if (message) notify(message); return true; }
+    try {
+      await task();
+      if (serverRendered) {
+        if (message) notify(message);
+        if (!pageNavigating) reloadPage();
+      } else { await refreshPlanning({ forceDetails: true }); if (message) notify(message); }
+      return true;
+    }
     finally { mutationBusy = false; $$('dialog button, #auth-submit').forEach(button => { button.disabled = false; }); renderTimer(); }
   }
   function confirmAction(title, description, label, callback, danger = false) {
@@ -712,6 +813,11 @@
     $('#shift-error').textContent = ''; $('#shift-dialog').showModal();
   }
   async function selectUser(id, targetView = null) {
+    if (serverRendered) {
+      selectedUserId = id;
+      navigatePage(targetView || view, { ...(targetView === 'calendar' ? { month: $('#calendar-month').value } : {}) });
+      return;
+    }
     selectedUserId = id; $('#selected-user').value = String(id); reportRequest += 1;
     shiftCache.clear(); resetCalendarView(); invalidateTimesheet();
     await loadDashboard();
@@ -724,13 +830,19 @@
 
   document.addEventListener('click', async event => {
     const viewButton = event.target.closest('button[data-view], a[data-view]');
-    if (viewButton) { try { await setView(viewButton.dataset.view); } catch (error) { notify(error.message, true); } return; }
+    if (viewButton) {
+      if (serverRendered && viewButton.tagName === 'A') return;
+      event.preventDefault();
+      try { await setView(viewButton.dataset.view); } catch (error) { notify(error.message, true); } return;
+    }
     const button = event.target.closest('[data-action]'); if (!button || button.disabled) return;
+    if (serverRendered && button.tagName === 'BUTTON') event.preventDefault();
     const { action, id } = button.dataset;
     try {
       if (action === 'close-dialog') { button.closest('dialog').close(); return; }
       if (action === 'retry') { await initialize(); return; }
       if (!session.user) return;
+      if (serverRendered && ['refresh-team', 'refresh-requests', 'refresh-audit'].includes(action)) { reloadPage(); return; }
       if (action === 'calendar-day') openCalendarDay(button.dataset.date);
       if (action === 'calendar-prev') await changeCalendarMonth(-1);
       if (action === 'calendar-next') await changeCalendarMonth(1);
@@ -756,6 +868,7 @@
       if (action === 'team-filter') { teamFilter = button.dataset.status; renderTeamStatus(); }
       if (action === 'print-timesheet') {
         if (!can('view_reports') || !timesheetReady) { notify('Сначала дождитесь загрузки табеля.', true); return; }
+        if (serverRendered) renderTimesheet();
         document.body.classList.add('printing-timesheet'); window.print();
       }
       if (action === 'delete-absence') {
@@ -785,7 +898,10 @@
         try { const done = await mutate(submittedCallback); if (done && confirmCallback === submittedCallback) { $('#confirm-dialog').close(); confirmCallback = null; } }
         catch (error) { if (confirmCallback === submittedCallback) $('#confirm-error').textContent = error.message; }
       }
-      if (action === 'reset-filters') { $('#history-from').value = ''; $('#history-to').value = ''; $('#history-status').value = 'all'; renderHistory(); }
+      if (action === 'reset-filters') {
+        $('#history-from').value = ''; $('#history-to').value = ''; $('#history-status').value = 'all';
+        if (serverRendered) navigatePage('history', { from: null, to: null, status: null }); else renderHistory();
+      }
       if (action === 'export-history') await exportReport(true);
       if (action === 'export-report') await exportReport();
       if (action === 'refresh-audit') await loadAudit();
@@ -914,6 +1030,7 @@
         if (!sameUser()) return;
         $('#request-dialog').close(); $('#request-form').reset();
         $('#requests-filter').value = isAdmin() ? 'pending' : 'all';
+        if (serverRendered) { navigatePage('requests', { status: $('#requests-filter').value }); return; }
         await setView('requests'); notify('Заявка отправлена на рассмотрение.');
       });
     } catch (error) { if (sameUser()) $('#request-error').textContent = error.message; }
@@ -937,31 +1054,46 @@
       if ([404, 409].includes(error.status)) await refreshPlanning();
     }
   });
-  $('#requests-filter').addEventListener('change', async () => {
+  $('#requests-filter').addEventListener('change', async event => {
+    if (serverRendered) { submitPageFilter(event.target, { status: event.target.value }); return; }
     requestsRequest += 1; absenceRequests = null; $('#requests-list').replaceChildren();
     await loadRequests();
   });
-  $('#calendar-month').addEventListener('change', async () => { resetCalendarView(); await loadCalendar(); });
+  $('#calendar-month').addEventListener('change', async event => {
+    if (serverRendered) { submitPageFilter(event.target, { month: event.target.value }); return; }
+    resetCalendarView(); await loadCalendar();
+  });
   $('#calendar-grid').addEventListener('keydown', event => {
     const button = event.target.closest('[data-action="calendar-day"]'); if (!button) return;
     const buttons = [...$('#calendar-grid').querySelectorAll('[data-action="calendar-day"]')], index = buttons.indexOf(button);
     const offsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
     if (offsets[event.key] != null) { const target = buttons[index + offsets[event.key]]; if (target) { event.preventDefault(); target.focus(); } }
   });
-  $('#timesheet-filter-form').addEventListener('submit', async event => { event.preventDefault(); invalidateTimesheet(); await loadTimesheet(); });
-  ['#timesheet-month', '#timesheet-scope'].forEach(selector => $(selector).addEventListener('change', async () => { invalidateTimesheet(); renderAccount(); await loadTimesheet(); }));
+  $('#timesheet-filter-form').addEventListener('submit', async event => { if (serverRendered) return; event.preventDefault(); invalidateTimesheet(); await loadTimesheet(); });
+  ['#timesheet-month', '#timesheet-scope'].forEach(selector => $(selector).addEventListener('change', async event => {
+    if (serverRendered) { submitPageFilter(event.target, { month: $('#timesheet-month').value, scope: $('#timesheet-scope').value }); return; }
+    invalidateTimesheet(); renderAccount(); await loadTimesheet();
+  }));
   window.addEventListener('afterprint', () => { document.body.classList.remove('printing-timesheet'); });
-  $('#report-filter-form').addEventListener('submit', async event => { event.preventDefault(); try { await loadReport(); } catch (error) { notify(error.message, true); } });
-  ['#history-from', '#history-to', '#history-status'].forEach(selector => $(selector).addEventListener('change', renderHistory));
-  $('#employee-search').addEventListener('input', renderEmployees); $('#show-archived').addEventListener('change', renderEmployees);
+  $('#report-filter-form').addEventListener('submit', async event => { if (serverRendered) return; event.preventDefault(); try { await loadReport(); } catch (error) { notify(error.message, true); } });
+  ['#history-from', '#history-to', '#history-status'].forEach(selector => $(selector).addEventListener('change', event => {
+    if (serverRendered) submitPageFilter(event.target, { from: $('#history-from').value, to: $('#history-to').value, status: $('#history-status').value });
+    else renderHistory();
+  }));
+  $('#employee-search').addEventListener('input', () => { if (!serverRendered) renderEmployees(); });
+  $('#show-archived').addEventListener('change', event => {
+    if (serverRendered) submitPageFilter(event.target, { search: $('#employee-search').value, includeArchived: event.target.checked ? '1' : '0' });
+    else renderEmployees();
+  });
   $('#selected-user').addEventListener('change', async event => { try { await selectUser(event.target.value); } catch (error) { notify(error.message, true); } });
   window.addEventListener('hashchange', () => { if (session.user) void setView(location.hash.slice(1)).catch(error => notify(error.message, true)); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });
   window.addEventListener('focus', () => { void refresh(); });
   window.addEventListener('online', () => { void refresh(); });
   window.addEventListener('offline', () => { connectionStatus(false); renderTimer(); });
+  window.addEventListener('pageshow', event => { if (serverRendered && event.persisted) reloadPage(); });
   setInterval(renderTimer, 1000);
-  setInterval(() => { if (session.user && !document.hidden) { renderWeek(); renderTimeline(); } }, 60000);
+  setInterval(() => { if (session.user && !document.hidden && (!serverRendered || view === 'overview')) { renderWeek(); renderTimeline(); } }, 60000);
   setInterval(() => { void refresh(); }, 20000);
-  void initialize();
+  if (serverRendered) void initializeServerPage(); else void initialize();
 })();

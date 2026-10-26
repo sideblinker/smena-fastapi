@@ -1,0 +1,36 @@
+{% macro icon(name) -%}<svg class="icon" aria-hidden="true"><use href="#i-{{ name }}"/></svg>{%- endmacro %}
+
+{% macro empty(title, message) -%}
+<div class="empty-state"><span class="empty-icon">{{ icon('history') }}</span><strong>{{ title }}</strong><p>{{ message }}</p></div>
+{%- endmacro %}
+
+{% macro pagination(data) -%}
+{% if data and data.pagination %}
+{% set p = data.pagination %}
+<nav class="pagination" aria-label="Страницы списка" data-pagination>
+  {% if p.page > 1 %}<a class="button small" href="{{ page_url(p.page - 1) }}" rel="prev">← Назад</a>{% else %}<span class="button small" aria-disabled="true">← Назад</span>{% endif %}
+  <span class="pagination-summary">Страница {{ p.page }} из {{ p.pages }} · Всего: {{ p.total }}</span>
+  {% if p.page < p.pages %}<a class="button small" href="{{ page_url(p.page + 1) }}" rel="next">Далее →</a>{% else %}<span class="button small" aria-disabled="true">Далее →</span>{% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}
+
+{% macro hidden_filters(target, include_user=true) -%}
+<input type="hidden" name="view" value="{{ target }}">
+{% if include_user and userId %}<input type="hidden" name="userId" value="{{ userId }}">{% endif %}
+<input type="hidden" name="pageSize" value="{{ filters.pageSize }}">
+{%- endmacro %}
+
+{% macro shift_table(rows, compact=false) -%}
+{% if rows %}
+<div class="table-wrap"><table class="data-table"><thead><tr><th>Дата</th><th>{{ 'Отработано' if compact else 'Начало / конец' }}</th>{% if not compact %}<th>Перерывы</th><th>Отработано</th>{% endif %}<th>Статус</th>{% if not compact %}<th>Действия</th>{% endif %}</tr></thead>
+<tbody>{% for shift in rows %}{% set metric = fmt.shift_metrics(shift, now) %}
+  <tr data-shift-id="{{ shift.id }}"><td><span class="table-date">{{ fmt.short_date(shift.startedAt) }}</span><span class="table-secondary">{{ fmt.local_datetime(shift.startedAt).year }}</span>{% if shift.note %}<span class="shift-note" title="{{ shift.note }}">{{ shift.note }}</span>{% endif %}</td>
+    <td>{{ fmt.readable(metric.workMs) if compact else fmt.clock_time(shift.startedAt) }}{% if not compact %}<span class="table-secondary inline"> / {{ fmt.full_date(shift.endedAt) if shift.endedAt else 'продолжается' }}</span>{% endif %}</td>
+    {% if not compact %}<td>{{ fmt.readable(metric.breakMs) }}</td><td class="table-duration">{{ fmt.readable(metric.workMs) }}</td>{% endif %}
+    <td><span class="pill {{ 'active' if metric.status == 'working' else 'paused' if metric.status == 'break' else '' }}">{{ metric.label }}</span></td>
+    {% if not compact %}<td><div class="row-actions"><button class="button small" data-action="edit-shift" data-id="{{ shift.id }}">Изменить</button>{% if can('edit_own_shifts') %}<button class="button small danger" data-action="delete-shift" data-id="{{ shift.id }}" aria-label="Удалить смену от {{ fmt.short_date(shift.startedAt) }}">Удалить</button>{% endif %}</div></td>{% endif %}
+  </tr>
+{% endfor %}</tbody></table></div>
+{% else %}{{ empty('Смен пока нет', 'Измените фильтры или начните первую смену.') }}{% endif %}
+{%- endmacro %}

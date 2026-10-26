@@ -1,0 +1,8 @@
+{% if overview.events %}
+{% for event in overview.events %}
+<div class="timeline-item{% if event.actions %} has-action{% endif %}">
+  <span class="timeline-marker">{{ icon(event.symbol) }}</span><div class="timeline-content"><strong>{{ event.title }}</strong><span>{{ event.description }}</span></div><time class="timeline-time">{{ fmt.clock_time(event.time) }}</time>
+  {% if event.actions %}<div class="timeline-actions"><button type="button" class="button small" data-action="edit-shift" data-id="{{ event.shift.id }}" aria-label="Изменить смену от {{ fmt.full_date(event.shift.startedAt) }}">Изменить смену</button>{% if can('edit_own_shifts') %}<button type="button" class="button small danger" data-action="delete-shift" data-id="{{ event.shift.id }}" aria-label="Удалить смену от {{ fmt.full_date(event.shift.startedAt) }}">Удалить смену</button>{% endif %}</div>{% endif %}
+</div>
+{% endfor %}
+{% else %}<div class="timeline-empty"><span class="empty-icon">{{ icon('sun') }}</span><strong>Новый день — чистый лист</strong><p>Начните смену, и здесь появятся события рабочего дня.</p></div>{% endif %}

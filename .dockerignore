@@ -1,0 +1,12 @@
+**
+!requirements.txt
+!run.py
+!backend/
+!backend/**
+!public/
+!public/**
+!db/
+!db/schema.sql
+**/__pycache__/
+**/*.pyc
+**/.env*

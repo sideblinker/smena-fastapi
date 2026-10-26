@@ -1,0 +1,16 @@
+{% if timesheet.rows %}
+{% for start, end in [(0, 15), (15, timesheet.days|length)] %}
+{% set dates = timesheet.days[start:end] %}
+<section class="print-half">
+  <h3>{{ dates[0][-2:]|int }}–{{ dates[-1][-2:]|int }} · {{ fmt.month_label(timesheet.month) }}</h3>
+  <table class="timesheet-print-table"><thead><tr><th scope="col" class="print-person">Сотрудник</th>{% for date in dates %}<th scope="col">{{ date[-2:]|int }}</th>{% endfor %}<th scope="col">Факт, ч</th></tr></thead><tbody>
+    {% for row in timesheet.rows %}<tr><th scope="row" class="print-person">{{ row.user.name }}</th>{% for day in row.days[start:end] %}<td>{{ fmt.timesheet_cell(day) }}</td>{% endfor %}<td>{{ fmt.hours_number(row.days[start:end]|sum(attribute='workMs')) }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endfor %}
+<section class="print-month-totals"><h3>Итоги месяца, часы</h3>
+  <table class="timesheet-print-table"><thead><tr><th scope="col" class="print-person">Сотрудник</th><th scope="col">План</th><th scope="col">Факт</th><th scope="col">Перерывы</th><th scope="col">Опоздания</th><th scope="col">Сверх плана</th></tr></thead><tbody>
+    {% for row in timesheet.rows %}<tr><th scope="row" class="print-person">{{ row.user.name }}</th>{% for key in ['plannedMs','workMs','breakMs','lateMs','overtimeMs'] %}<td>{{ fmt.hours_number(row[key]) }}</td>{% endfor %}</tr>{% endfor %}
+  </tbody></table>
+</section>
+{% else %}<p>Нет сотрудников для табеля.</p>{% endif %}

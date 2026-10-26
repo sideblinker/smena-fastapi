@@ -64,5 +64,16 @@ data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite.before-fastapi.bak
 .env*
+
+# Python runtime and local verification output.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
 

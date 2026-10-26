@@ -1,0 +1,11 @@
+{% for entry in requests.requests %}
+<article class="absence-request-card" data-request-id="{{ entry.id }}"><div class="request-card-main"><div class="request-card-heading"><span class="request-kind-icon">{{ icon('sun' if entry.type == 'vacation' else 'calendar') }}</span><div><h2>{{ fmt.ABSENCE_LABELS[entry.type] }}</h2>{% if is_admin %}<p>{{ entry.user.name }}{% if entry.user.department %} · {{ entry.user.department }}{% endif %}</p>{% endif %}</div><span class="request-status {{ entry.status }}">{{ fmt.REQUEST_LABELS[entry.status] }}</span></div>
+<div class="request-period"><strong>{{ fmt.local_datetime(entry.startDate).strftime('%d.%m.%Y') }}{% if entry.endDate != entry.startDate %} — {{ fmt.local_datetime(entry.endDate).strftime('%d.%m.%Y') }}{% endif %}</strong><span>Дней: {{ (fmt.local_datetime(entry.endDate) - fmt.local_datetime(entry.startDate)).days + 1 }}</span></div>
+{% if entry.note %}<p class="request-note">{{ entry.note }}</p>{% endif %}
+{% if entry.decisionNote %}<div class="request-decision-note"><span>Комментарий администратора</span><p>{{ entry.decisionNote }}</p></div>{% endif %}
+{% if entry.status == 'approved' and not entry.absenceId %}<p class="request-calendar-removed">Запись отсутствия удалена из календаря администратором.</p>{% endif %}
+<div class="request-card-meta"><span>Подана {{ fmt.full_date(entry.createdAt) }}</span>{% if entry.decidedAt %}<span>Решение {{ fmt.full_date(entry.decidedAt) }}{% if entry.decidedBy %} · {{ entry.decidedBy.name }}{% endif %}</span>{% endif %}</div></div>
+{% if entry.status == 'pending' %}<div class="request-card-actions">{% if is_admin %}<button class="button small dark" data-action="approve-request" data-id="{{ entry.id }}">Одобрить</button><button class="button small danger" data-action="reject-request" data-id="{{ entry.id }}">Отклонить</button>{% endif %}{% if entry.userId == session.user.id %}<button class="button small" data-action="cancel-request" data-id="{{ entry.id }}">Отменить заявку</button>{% endif %}</div>{% endif %}
+</article>
+{% else %}{{ empty('Заявок пока нет', 'Подайте заявку или выберите другой статус.') }}{% endfor %}
+{{ pagination(requests) }}

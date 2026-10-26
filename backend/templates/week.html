@@ -1,0 +1,7 @@
+{% for day in overview.weekDays %}
+<div class="chart-column{% if fmt.local_datetime(day.date).date().isoformat() == today %} today{% endif %}">
+  <span class="chart-value">{{ fmt.hours_number(day.workMs) ~ ' ч' if day.workMs else '—' }}</span>
+  <div class="chart-bar-space"><div class="chart-bar{% if not day.workMs %} empty{% endif %}" style="height:{{ day.height }}%" title="{{ fmt.short_date(day.date) }}: {{ fmt.readable(day.workMs) }}"></div></div>
+  <span class="chart-label">{{ day.label }}</span>
+</div>
+{% endfor %}

@@ -1,0 +1,54 @@
+/* Links and GET filters for server-rendered lists. */
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding-top: 18px;
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.pagination-summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.pagination-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.pagination-links .button { min-height: 34px; }
+.pagination [aria-disabled="true"] {
+  opacity: .4;
+  cursor: default;
+  pointer-events: none;
+}
+.pagination [aria-current="page"] {
+  border-color: var(--accent-blue, var(--sage));
+  color: var(--ink);
+}
+.server-filter-form { min-width: 0; }
+.server-filter-form .field { min-width: 0; }
+.server-filter-form > .button { align-self: flex-end; }
+.server-filter-form input[type="search"] { width: 100%; }
+.employee-toolbar.server-filter-form .button { margin-bottom: 1px; }
+.team-context > form.server-filter-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  width: 320px;
+}
+.team-context > form.server-filter-form > label { grid-column: 1 / -1; margin-bottom: 0; }
+.team-context > form.server-filter-form > select { width: 100%; min-width: 0; }
+.team-context > form.server-filter-form > .button { min-height: 38px; margin-left: 0; }
+@media (max-width: 650px) {
+  .pagination { gap: 12px; }
+  .pagination-summary { order: -1; flex-basis: 100%; }
+  .pagination-links { width: 100%; justify-content: space-between; }
+  .server-filter-form .button { min-height: 40px; }
+  .team-context > form.server-filter-form { width: auto; }
+}
+@media print { .pagination { display: none !important; } }

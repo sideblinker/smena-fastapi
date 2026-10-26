@@ -1,0 +1,12 @@
+{% if employees.users %}
+<div class="table-wrap"><table class="data-table employee-table"><thead><tr><th>Сотрудник</th><th>Должность / отдел</th><th>Доступ</th><th>Действия</th></tr></thead><tbody>
+{% for user in employees.users %}
+<tr data-user-id="{{ user.id }}"><td><span class="table-date">{{ user.name }}</span><span class="table-secondary">{{ user.username }}</span></td><td>{{ user.position or '—' }}<span class="table-secondary">{{ user.department or 'Без отдела' }}</span></td><td><span class="pill {{ 'active' if user.active else 'paused' }}">{{ 'Администратор' if user.role == 'admin' else 'Архив' if user.archived else 'Разрешён' if user.active else 'Заблокирован' }}</span><span class="table-secondary">{{ 'Все права' if user.role == 'admin' else 'Прав: ' ~ user.permissions|length ~ ' из 5' }}</span></td><td><div class="row-actions">
+<a class="button small" href="/?view=history&amp;userId={{ user.id }}">Смены</a><button class="button small" data-action="user-schedule" data-id="{{ user.id }}">График</button>
+{% if user.role == 'admin' %}<button class="button small" data-action="profile">Профиль</button>{% else %}
+<button class="button small" data-action="edit-user" data-id="{{ user.id }}">Профиль и права</button>
+{% if user.archived %}<button class="button small" data-action="restore-user" data-id="{{ user.id }}">Восстановить</button>{% else %}<button class="button small" data-action="toggle-user" data-id="{{ user.id }}">{{ 'Заблокировать' if user.active else 'Разблокировать' }}</button><button class="button small danger" data-action="archive-user" data-id="{{ user.id }}">В архив</button>{% endif %}
+{% endif %}</div></td></tr>
+{% endfor %}</tbody></table></div>
+{% else %}{{ empty('Сотрудников не найдено', 'Измените поиск или добавьте сотрудника в команду.') }}{% endif %}
+{{ pagination(employees) }}

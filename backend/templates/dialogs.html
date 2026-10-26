@@ -1,0 +1,336 @@
+  <dialog id="profile-dialog" aria-labelledby="profile-title">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</div>
+<h2 id="profile-title">Профиль и безопасность</h2>
+</div>
+<button class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<form id="profile-form">
+<div class="account-banner">
+<strong id="profile-login">
+</strong>
+<span id="profile-role">
+</span>
+</div>
+<div class="field">
+<label for="profile-name">Имя и фамилия</label>
+<input id="profile-name" required maxlength="100" autocomplete="name">
+</div>
+<div class="field">
+<label for="profile-position">Должность</label>
+<input id="profile-position" maxlength="100" autocomplete="organization-title">
+</div>
+<div class="field">
+<label for="profile-department">Отдел</label>
+<input id="profile-department" maxlength="100">
+</div>
+<p class="form-error" id="profile-error" role="alert">
+</p>
+<button class="button dark" type="submit" id="profile-submit">Сохранить профиль</button>
+<p class="card-subtitle" id="profile-permission-note" hidden>Изменение профиля доступно администратору.</p>
+</form>
+<form id="password-form" class="password-form">
+<h3>Смена пароля</h3>
+<div class="field">
+<label for="current-password">Текущий пароль</label>
+<input type="password" id="current-password" required autocomplete="current-password">
+</div>
+<div class="field">
+<label for="new-password">Новый пароль — от 10 символов</label>
+<input type="password" id="new-password" required minlength="10" maxlength="128" autocomplete="new-password">
+</div>
+<div class="field">
+<label for="confirm-password">Повторите новый пароль</label>
+<input type="password" id="confirm-password" required minlength="10" maxlength="128" autocomplete="new-password">
+</div>
+<p class="form-error" id="password-error" role="alert">
+</p>
+<button class="button" type="submit">Изменить пароль</button>
+</form>
+</div>
+</dialog>
+  <dialog id="employee-dialog" class="wide-dialog" aria-labelledby="employee-title">
+<form id="employee-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">УПРАВЛЕНИЕ КОМАНДОЙ</div>
+<h2 id="employee-title">Новый сотрудник</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<div class="form-grid employee-fields">
+<div class="field">
+<label for="edit-name">Имя и фамилия</label>
+<input id="edit-name" required maxlength="100" autocomplete="off">
+</div>
+<div class="field">
+<label for="edit-username">Логин</label>
+<input id="edit-username" required minlength="3" maxlength="40" autocomplete="off" pattern="[A-Za-z0-9_.-]{3,40}" title="От 3 до 40 латинских букв, цифр, точек, дефисов или подчёркиваний">
+</div>
+<div class="field">
+<label for="edit-password" id="edit-password-label">Пароль — от 10 символов</label>
+<input id="edit-password" type="password" minlength="10" maxlength="128" autocomplete="new-password">
+</div>
+<div class="field">
+<label for="edit-position">Должность</label>
+<input id="edit-position" maxlength="100">
+</div>
+<div class="field">
+<label for="edit-department">Отдел</label>
+<input id="edit-department" maxlength="100">
+</div>
+</div>
+<fieldset class="permission-fieldset">
+<legend>Права сотрудника</legend>
+<p class="card-subtitle">Сотрудник работает только со своими данными. Управление командой доступно Адилю Кубентаеву.</p>
+<div id="permission-options">
+</div>
+</fieldset>
+<label class="check-label" id="employee-active-label">
+<input type="checkbox" id="edit-active" checked>Вход в аккаунт разрешён</label>
+<p class="form-error" id="employee-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Отмена</button>
+<button type="submit" class="button dark">Сохранить сотрудника</button>
+</div>
+</form>
+</dialog>
+  <dialog id="schedule-dialog" aria-labelledby="schedule-title">
+<form id="schedule-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">РАБОЧИЙ РИТМ</div>
+<h2 id="schedule-title">График сотрудника</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<p id="schedule-person">
+</p>
+<div class="form-grid schedule-fields">
+<div class="field">
+<label for="schedule-start">Начало рабочего дня</label>
+<input type="time" id="schedule-start" required>
+</div>
+<div class="field">
+<label for="schedule-end">Конец рабочего дня</label>
+<input type="time" id="schedule-end" required>
+</div>
+<div class="field full-width">
+<label for="schedule-break">Плановый перерыв, минут</label>
+<input type="number" id="schedule-break" min="0" max="720" required>
+</div>
+</div>
+<fieldset class="permission-fieldset">
+<legend>Рабочие дни</legend>
+<div class="weekday-options" id="schedule-weekdays">
+</div>
+</fieldset>
+<p class="card-subtitle">Время Казахстана (Asia/Qyzylorda, UTC+5). Если конец раньше начала, смена продолжается на следующий день. График задаёт план, фактическое время фиксируется кнопками смены.</p>
+<p class="form-error" id="schedule-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Отмена</button>
+<button type="submit" class="button dark">Сохранить график</button>
+</div>
+</form>
+</dialog>
+  <dialog id="shift-dialog" class="wide-dialog" aria-labelledby="shift-title">
+<form id="shift-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">РЕДАКТИРОВАНИЕ УЧЁТА</div>
+<h2 id="shift-title">Добавить смену</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<p class="timezone-note">Все даты и время — Казахстан, UTC+5.</p>
+<div class="form-grid shift-fields">
+<div class="field">
+<label for="shift-start">Начало смены</label>
+<input type="datetime-local" id="shift-start" required step="1">
+</div>
+<div class="field">
+<label for="shift-end">Конец смены</label>
+<input type="datetime-local" id="shift-end" step="1">
+</div>
+</div>
+<p class="card-subtitle">Пустой конец означает, что смена продолжается.</p>
+<div class="break-heading">
+<h3>Перерывы</h3>
+<button type="button" class="button small" data-action="add-break">+ Добавить перерыв</button>
+</div>
+<div id="shift-breaks">
+</div>
+<div class="field">
+<label for="shift-note">Комментарий к смене</label>
+<textarea id="shift-note" rows="3" maxlength="1000" placeholder="Например: исправлено время начала по согласованию">
+</textarea>
+</div>
+<div class="field shift-reason-field" id="shift-reason-field" hidden>
+<label for="shift-reason">Причина изменения</label>
+<textarea id="shift-reason" rows="2" minlength="3" maxlength="500" placeholder="Например: забыл вовремя завершить перерыв" aria-describedby="shift-reason-help">
+</textarea>
+<span class="card-subtitle" id="shift-reason-help">Обязательно при исправлении. Причина и значения до/после сохранятся в журнале.</span>
+</div>
+<p class="form-error" id="shift-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Отмена</button>
+<button type="submit" class="button dark">Сохранить смену</button>
+</div>
+</form>
+</dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+<div class="dialog-header">
+<h2 id="confirm-title">
+</h2>
+<button class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<p id="confirm-text">
+</p>
+<p class="form-error" id="confirm-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button class="button" data-action="close-dialog">Отмена</button>
+<button class="button dark" id="confirm-button" data-action="confirm">Подтвердить</button>
+</div>
+</dialog>
+  <dialog id="calendar-day-dialog" class="day-drawer" aria-labelledby="day-detail-title">
+<div class="dialog-header">
+<div>
+<div class="eyebrow" id="day-detail-person">ПОДРОБНОСТИ ДНЯ</div>
+<h2 id="day-detail-title">Рабочий день</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть подробности дня">×</button>
+</div>
+<div class="dialog-body" id="day-detail-body">
+</div>
+</dialog>
+  <dialog id="absence-dialog" aria-labelledby="absence-title">
+<form id="absence-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">ПЛАНИРОВАНИЕ КОМАНДЫ</div>
+<h2 id="absence-title">Добавить отсутствие</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<p id="absence-person">
+</p>
+<div class="form-grid absence-fields">
+<div class="field">
+<label for="absence-start">Первый день</label>
+<input type="date" id="absence-start" required>
+</div>
+<div class="field">
+<label for="absence-end">Последний день включительно</label>
+<input type="date" id="absence-end" required>
+</div>
+</div>
+<div class="field">
+<label for="absence-type">Вид отсутствия</label>
+<select id="absence-type">
+<option value="vacation">Отпуск</option>
+<option value="day_off">Отгул</option>
+<option value="other">Другое отсутствие</option>
+</select>
+</div>
+<div class="field">
+<label for="absence-note">Комментарий</label>
+<textarea id="absence-note" rows="3" maxlength="500" placeholder="При необходимости укажите пояснение">
+</textarea>
+</div>
+<p class="card-subtitle">В эти даты плановое время будет равно нулю. Существующие смены и фактические часы сохранятся.</p>
+<p class="form-error" id="absence-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Отмена</button>
+<button type="submit" class="button dark">Сохранить отсутствие</button>
+</div>
+</form>
+</dialog>
+  <dialog id="request-dialog" aria-labelledby="request-title">
+<form id="request-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">ПЛАНЫ НА ОТДЫХ</div>
+<h2 id="request-title">Подать заявку</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<p id="request-person" class="request-person">
+</p>
+<div class="form-grid absence-fields">
+<div class="field">
+<label for="request-start">Первый день</label>
+<input type="date" id="request-start" required>
+</div>
+<div class="field">
+<label for="request-end">Последний день включительно</label>
+<input type="date" id="request-end" required>
+</div>
+</div>
+<div class="field">
+<label for="request-type">Вид заявки</label>
+<select id="request-type">
+<option value="vacation">Отпуск</option>
+<option value="day_off">Отгул</option>
+</select>
+</div>
+<div class="field">
+<label for="request-note">Комментарий для администратора</label>
+<textarea id="request-note" rows="3" maxlength="2000" placeholder="Необязательно: добавьте пояснение к заявке">
+</textarea>
+</div>
+<p class="card-subtitle">Заявка подаётся от вашего имени. Отсутствие будет добавлено в календарь после одобрения.</p>
+<p id="request-error" class="form-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Отмена</button>
+<button type="submit" class="button dark">Отправить заявку</button>
+</div>
+</form>
+</dialog>
+  <dialog id="request-decision-dialog" aria-labelledby="request-decision-title">
+<form id="request-decision-form">
+<div class="dialog-header">
+<div>
+<div class="eyebrow">РЕШЕНИЕ ПО ЗАЯВКЕ</div>
+<h2 id="request-decision-title">Рассмотреть заявку</h2>
+</div>
+<button type="button" class="close-button" data-action="close-dialog" aria-label="Закрыть">×</button>
+</div>
+<div class="dialog-body">
+<div id="request-decision-summary" class="request-decision-summary">
+</div>
+<div class="field">
+<label for="request-decision-note" id="request-decision-label">Комментарий к решению</label>
+<textarea id="request-decision-note" rows="3" maxlength="500" aria-describedby="request-decision-help">
+</textarea>
+<span id="request-decision-help" class="card-subtitle">
+</span>
+</div>
+<p id="request-decision-error" class="form-error" role="alert">
+</p>
+</div>
+<div class="dialog-actions">
+<button type="button" class="button" data-action="close-dialog">Назад</button>
+<button type="submit" class="button dark" id="request-decision-submit">Подтвердить</button>
+</div>
+</form>
+</dialog>
