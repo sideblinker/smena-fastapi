@@ -11,7 +11,6 @@ import secrets
 from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from uuid import uuid4
 from typing import Annotated
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -30,6 +29,7 @@ from backend.common import (
     require_own,
     require_permission,
 )
+from backend.attendance import OFFSET
 from backend.dependencies import CurrentActor, Db
 from backend.models import AuditLog, Break, Shift
 from backend.schemas.common import Ok
@@ -248,7 +248,9 @@ def _overlap(start, end, other_start, other_end):
 
 def build_report(db, user_id, from_date, to_date, now, timezone):
     """Range reports clip to calendar midnights (the monthly timesheet does not)."""
-    zone = ZoneInfo(timezone)
+    # Match the fixed UTC+5 business calendar and editor for historical records
+    # as well. IANA's historical offsets would move an old shift to another day.
+    zone = datetime_timezone(timedelta(milliseconds=OFFSET))
     today = datetime.fromtimestamp(now / 1000, zone).date()
     period = validated_query(ReportRange, {"from": from_date or today.replace(day=1).isoformat(), "to": to_date or today.isoformat()})
     first, last = date.fromisoformat(period.from_date), date.fromisoformat(period.to)

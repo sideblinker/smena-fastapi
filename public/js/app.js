@@ -26,9 +26,12 @@
   const absenceLabels = { vacation: 'Отпуск', day_off: 'Отгул', other: 'Другое отсутствие' };
   const dayLabels = { upcoming: 'По графику', not_started: 'Не начата', working: 'В работе', break: 'Перерыв', finished: 'Завершена', missed: 'Не отмечена' };
   const teamLabels = { working: 'На работе', break: 'На перерыве', finished: 'Завершили', not_started: 'Не начали', absence: 'Отсутствуют', day_off: 'Выходной' };
-  const dateFormatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: ZONE });
-  const timeFormatter = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: ZONE });
-  const fullFormatter = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: ZONE });
+  // Учёт и поля ввода используют UTC+5 даже для архивных дат.
+  // Исторические переводы часов Asia/Qyzylorda не должны сдвигать показания.
+  const DISPLAY_ZONE = 'Etc/GMT-5';
+  const dateFormatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: DISPLAY_ZONE });
+  const timeFormatter = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: DISPLAY_ZONE });
+  const fullFormatter = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: DISPLAY_ZONE });
   let session = { user: null, csrfToken: '', setupRequired: false };
   let users = [], dashboard = { user: null, schedule: null, shifts: [] }, selectedUserId = null;
   let view = 'overview', offset = 0, mutationBusy = false, refreshBusy = false, connected = true;
@@ -59,10 +62,21 @@
   function submitPageFilter(element, changes = {}) {
     const form = element.closest('form');
     if (form?.method.toLowerCase() === 'get') {
+      if (!validatePageFilter(form)) return;
       const pageInput = form.elements.namedItem('page');
       if (pageInput) pageInput.value = '1';
       form.requestSubmit();
     } else navigatePage(view, changes);
+  }
+  function validatePageFilter(form) {
+    try {
+      if (form.id === 'history-filter-form') {
+        const from = $('#history-from').value, to = $('#history-to').value;
+        if (from && to && from > to) throw new Error('Дата начала должна быть не позже даты окончания.');
+      }
+      if (form.id === 'report-filter-form') validateRange($('#report-from').value, $('#report-to').value);
+      return true;
+    } catch (error) { notify(error.message, true); return false; }
   }
   function normalizeShifts(shifts = []) {
     return shifts.map(shift => ({ ...shift, startedAt: numericTime(shift.startedAt), endedAt: shift.endedAt == null ? null : numericTime(shift.endedAt), breaks: (shift.breaks || []).map(pause => ({ ...pause, startedAt: numericTime(pause.startedAt), endedAt: pause.endedAt == null ? null : numericTime(pause.endedAt) })) }));
@@ -124,7 +138,7 @@
   const totalBetween = (from, to, current = now()) => dashboard.shifts.reduce((sum, shift) => sum + workBetween(shift, from, to, current), 0);
   const metrics = (shift, current = now()) => ({ workMs: workBetween(shift, -Infinity, Infinity, current), breakMs: breakBetween(shift, -Infinity, Infinity, current), status: shift.endedAt != null ? 'finished' : shift.breaks.some(pause => pause.endedAt == null) ? 'break' : 'working' });
   const queryForUser = extra => new URLSearchParams({ userId: String(selectedUserId), ...extra }).toString();
-  const monthLabel = value => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: ZONE }).format(dayFromKey(`${value}-01`));
+  const monthLabel = value => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: DISPLAY_ZONE }).format(dayFromKey(`${value}-01`));
   const shortHours = ms => `${(Math.max(0, Number(ms) || 0) / HOUR).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ч`;
   const validMonth = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
   const lookupShift = id => shiftCache.get(String(id)) || dashboard.shifts.find(shift => String(shift.id) === String(id));
@@ -1075,7 +1089,13 @@
     invalidateTimesheet(); renderAccount(); await loadTimesheet();
   }));
   window.addEventListener('afterprint', () => { document.body.classList.remove('printing-timesheet'); });
-  $('#report-filter-form').addEventListener('submit', async event => { if (serverRendered) return; event.preventDefault(); try { await loadReport(); } catch (error) { notify(error.message, true); } });
+  $('#history-filter-form')?.addEventListener('submit', event => {
+    if (serverRendered && !validatePageFilter(event.currentTarget)) event.preventDefault();
+  });
+  $('#report-filter-form').addEventListener('submit', async event => {
+    if (serverRendered) { if (!validatePageFilter(event.currentTarget)) event.preventDefault(); return; }
+    event.preventDefault(); try { await loadReport(); } catch (error) { notify(error.message, true); }
+  });
   ['#history-from', '#history-to', '#history-status'].forEach(selector => $(selector).addEventListener('change', event => {
     if (serverRendered) submitPageFilter(event.target, { from: $('#history-from').value, to: $('#history-to').value, status: $('#history-status').value });
     else renderHistory();

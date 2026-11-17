@@ -183,3 +183,25 @@ def test_csv_permission_formula_escaping_and_export_audit(env):
     assert env.client.get("/api/reports").status_code == 403
     env.admin_login()
     assert any(entry["action"] == "report_exported" for entry in env.client.get("/api/audit").json()["entries"])
+
+
+def test_historical_reports_use_same_fixed_utc5_days_as_editor_and_calendar(env):
+    # Asia/Qyzylorda had a different historical offset. The application's
+    # editor and calendar intentionally use fixed UTC+5 for every stored date.
+    start = int(datetime.fromisoformat("2017-10-13T23:00:00+05:00").timestamp() * 1000)
+    shift = added_shift(env, startedAt=start, endedAt=start + 3 * HOUR,
+                        breaks=[{"startedAt": start + HOUR // 2,
+                                 "endedAt": start + HOUR * 3 // 2}])
+    response = env.client.get("/api/reports?from=2017-10-13&to=2017-10-14")
+    assert response.status_code == 200, response.text
+    assert response.json()["days"] == [
+        {"date": "2017-10-13", "workMs": HOUR // 2, "breakMs": HOUR // 2},
+        {"date": "2017-10-14", "workMs": HOUR * 3 // 2, "breakMs": HOUR // 2},
+    ]
+    first_day = env.client.get("/api/reports?from=2017-10-13&to=2017-10-13").json()
+    assert first_day["totals"]["workMs"] == HOUR // 2
+    history = env.client.get("/api/shifts?from=2017-10-13&to=2017-10-13").json()
+    assert [row["id"] for row in history["shifts"]] == [shift["id"]]
+    calendar = env.client.get("/api/calendar?month=2017-10").json()
+    day = next(row for row in calendar["days"] if row["date"] == "2017-10-13")
+    assert day["workMs"] == 2 * HOUR  # the timesheet assigns all work to start day
