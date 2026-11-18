@@ -2,40 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-// Run the real client script against a small DOM adapter. No server or user data.
-function page() {
-  const nodes = new Map(), formatters = [];
-  const node = id => {
-    if (!nodes.has(id)) nodes.set(id, {
-      id, value: '', textContent: '', method: 'get', submissions: 0, handlers: {},
-      elements: { namedItem: () => null },
-      addEventListener(type, callback) { this.handlers[type] = callback; },
-      closest() { return this.form; },
-      requestSubmit() { this.submissions++; },
-    });
-    return nodes.get(id);
-  };
-  node('smena-bootstrap').textContent = JSON.stringify({ session: { user: null }, view: 'history' });
-  for (const prefix of ['history', 'report']) {
-    for (const suffix of ['from', 'to', 'status']) node(`${prefix}-${suffix}`).form = node(`${prefix}-filter-form`);
-  }
-  const document = { querySelector: selector => node(selector.slice(1)), querySelectorAll: () => [], addEventListener() {} };
-  const context = { document, window: { addEventListener() {} }, location: { hash: '', search: '', pathname: '/', href: 'http://localhost/' },
-    Intl: { DateTimeFormat: function (...args) { const formatter = new Intl.DateTimeFormat(...args); formatters.push(formatter); return formatter; } },
-    URL, URLSearchParams, setInterval() {}, setTimeout() {}, clearTimeout() {}, console,
-  };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../public/js/app.js'), 'utf8'), context);
-  const emit = async (id, type) => {
-    const element = node(id), event = { target: element, currentTarget: element, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
-    await element.handlers[type](event);
-    return event;
-  };
-  return { node, emit, formatters };
-}
+const { page } = require('./helpers/frontend-page.cjs');
 
 test('reversed history dates stay in the form for changes and manual submit', async () => {
   const { node, emit } = page();

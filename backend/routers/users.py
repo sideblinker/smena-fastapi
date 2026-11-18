@@ -21,7 +21,7 @@ from backend.common import (
     require_permission,
 )
 from backend.dependencies import CurrentActor, Db
-from backend.models import Schedule, SessionRecord, User, UserPermission
+from backend.models import Schedule, SessionRecord, Shift, User, UserPermission
 from backend.schemas.common import Ok
 from backend.schemas.users import (
     ProfileUpdate,
@@ -41,6 +41,12 @@ router = APIRouter(prefix="/api", tags=["Сотрудники и графики"
 
 def _revoke_sessions(db, user_id):
     db.execute(delete(SessionRecord).where(SessionRecord.user_id == user_id))
+
+
+def _require_finished_shifts(db, user_id):
+    open_shift = select(Shift.id).where(Shift.user_id == user_id, Shift.ended_at.is_(None))
+    if db.scalar(open_shift) is not None:
+        fail(409, "ACTIVE_SHIFT", "Сначала завершите открытую смену сотрудника, затем повторите действие.")
 
 
 @router.get("/users", response_model=UsersResponse, response_model_exclude_none=True, summary="Сотрудники: поиск и постраничный список")
@@ -87,6 +93,8 @@ def update_user(user_id: Identifier, body: UserUpdate, request: Request, db: Db,
     active = False if archived else body.active if "active" in fields else bool(user.active)
     if user.master and (username != ADMIN_LOGIN or name != ADMIN_NAME or not active or archived or "permissions" in fields):
         fail(403, "MASTER_ADMIN", "Логин, имя, статус и полные права главного администратора защищены.")
+    if body.active is False or body.archived is True:
+        _require_finished_shifts(db, user.id)
 
     # Only explicitly supplied profile fields are changed. The request-wide
     # transaction ensures an edit cannot resurrect a disabled account or reset
@@ -122,6 +130,7 @@ def archive_user(user_id: Identifier, request: Request, db: Db, actor: CurrentAc
     user = get_user(db, user_id)
     if user.master:
         fail(403, "MASTER_ADMIN", "Главного администратора нельзя удалить.")
+    _require_finished_shifts(db, user.id)
     user.archived, user.active = 1, 0
     _revoke_sessions(db, user.id)
     db.flush()

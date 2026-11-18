@@ -221,19 +221,20 @@
 <div class="timer-digits" id="timer" role="timer" aria-label="Отработанное время">{{ fmt.duration(overview.metrics.workMs) if overview else "00:00:00" }}</div>
 <p class="timer-subtitle" id="timer-subtitle">{% if overview and overview.active %}Начало в {{ fmt.clock_time(overview.active.startedAt) }}{% else %}Новый день — новые возможности.{% endif %}</p>
 <div class="timer-actions">
-<button id="start-button" class="button primary" data-action="start"{% if overview and overview.active %} hidden{% endif %}{% if not can("track_time") or not dashboard or not dashboard.user.active or dashboard.user.archived %} disabled{% endif %}>
+{% set tracking_allowed = dashboard and dashboard.user.active and not dashboard.user.archived and can("track_time") %}
+<button id="start-button" class="button primary" data-action="start"{% if overview and overview.active %} hidden{% endif %}{% if not tracking_allowed %} disabled{% endif %}>
 <svg class="icon">
 <use href="#i-play"/>
 </svg>Начать работу</button>
-<button id="pause-button" class="button primary" data-action="pause"{% if not overview or not overview.active or overview.metrics.status == "break" %} hidden{% endif %}{% if not can("track_time") %} disabled{% endif %}>
+<button id="pause-button" class="button primary" data-action="pause"{% if not overview or not overview.active or overview.metrics.status == "break" %} hidden{% endif %}{% if not tracking_allowed %} disabled{% endif %}>
 <svg class="icon">
 <use href="#i-coffee"/>
 </svg>На перерыв</button>
-<button id="resume-button" class="button primary" data-action="resume"{% if not overview or overview.metrics.status != "break" %} hidden{% endif %}{% if not can("track_time") %} disabled{% endif %}>
+<button id="resume-button" class="button primary" data-action="resume"{% if not overview or overview.metrics.status != "break" %} hidden{% endif %}{% if not tracking_allowed %} disabled{% endif %}>
 <svg class="icon">
 <use href="#i-play"/>
 </svg>Продолжить</button>
-<button id="finish-button" class="button ghost" data-action="finish"{% if not overview or not overview.active or not can("track_time") %} disabled{% endif %}>
+<button id="finish-button" class="button ghost" data-action="finish"{% if not overview or not overview.active or not (tracking_allowed or is_admin) %} disabled{% endif %}>
 <svg class="icon">
 <use href="#i-stop"/>
 </svg>Завершить</button>
@@ -241,9 +242,9 @@
 <div class="timer-progress">
 <div class="progress-labels">
 <span>Рабочий ритм</span>
-<span id="progress-caption">{% if overview %}{{ fmt.hours_number(overview.metrics.workMs) }} из {{ fmt.hours_number(overview.plannedMs) }} часов{% endif %}</span>
+<span id="progress-caption">{% if overview %}{{ fmt.hours_number(overview.today.workMs) }} из {{ fmt.hours_number(overview.plannedMs) }} часов{% endif %}</span>
 </div>
-<div class="progress-track" role="progressbar" aria-label="Выполнение рабочего дня" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ overview.progress|round|int if overview else 0 }}" id="shift-progress">
+<div class="progress-track" role="progressbar" aria-label="Выполнение рабочего дня" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ (overview.progress + 0.5)|int if overview else 0 }}" id="shift-progress">
 <div class="progress-fill" id="progress-fill" style="width:{{ overview.progress if overview else 0 }}%">
 </div>
 </div>

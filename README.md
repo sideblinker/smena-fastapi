@@ -51,7 +51,13 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest tests_python -q
 ```
 
-Последняя проверка приложения (17.11.2026): **108 серверных тестов прошли**. Дополнительно пройдены 3 проверки клиентского JavaScript (`node --test tests/frontend.test.cjs`; для них нужен Node.js).
+Для проверки интерфейса с помощью Node.js выполните
+
+```powershell
+node --test tests/frontend.test.cjs tests/daily-progress.test.cjs tests/shift-editor.test.cjs
+```
+
+18.11.2026 прошли 116 серверных тестов и 9 тестов интерфейса.
 
 ## Структура
 

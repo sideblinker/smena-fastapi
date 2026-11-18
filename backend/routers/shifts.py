@@ -49,6 +49,7 @@ from backend.schemas.shifts import (
 from backend.schemas.query import (AuditListQuery, DateString, Identifier, PageNumber, PageSize,
                                   ReportRange, ShiftListQuery, validated_query)
 from backend.services.lists import list_shifts, list_audit
+from backend.services.presentation import dashboard_day_starts, dashboard_shifts
 
 router = APIRouter(prefix="/api", tags=["Смены и отчёты"])
 MAX_TIME = 8640000000000000
@@ -60,6 +61,11 @@ def _shift(db, shift_id: str):
     if row is None:
         fail(404, "NOT_FOUND", "Смена не найдена.")
     return row
+
+
+def _require_active_worker(user):
+    if not user.active or user.archived:
+        fail(409, "INACTIVE_USER", "Учёт текущей смены доступен только для действующего сотрудника.")
 
 
 def _overlaps(db, user_id, start, end, exclude_id=None):
@@ -94,10 +100,10 @@ def dashboard(request: Request, db: Db, actor: CurrentActor, userId: Identifier 
     user_id = userId or actor.user["id"]
     require_own(actor, user_id)
     user = get_user(db, user_id)
-    rows = db.scalars(select(Shift).where(Shift.user_id == user_id)
-                      .order_by(Shift.started_at.desc(), Shift.id.desc()).limit(2000)).all()
+    now = now_ms(request)
+    _, monday, month = dashboard_day_starts(now)
     return {"user": public_user(db, user), "schedule": get_schedule(db, user_id),
-            "shifts": [public_shift(db, row) for row in rows], "serverNow": now_ms(request)}
+            "shifts": dashboard_shifts(db, user_id, min(monday, month), recent_limit=2000), "serverNow": now}
 
 
 @router.get("/shifts", response_model=ShiftListResponse, summary="История смен: фильтры и пагинация")
@@ -117,9 +123,7 @@ def start_shift(body: ShiftStart, request: Request, db: Db, actor: CurrentActor)
     require_permission(actor, "track_time")
     user_id = body.userId or actor.user["id"]
     require_own(actor, user_id)
-    user = get_user(db, user_id)
-    if not user.active or user.archived:
-        fail(409, "INACTIVE_USER", "Для отключённого или архивного сотрудника нельзя начать смену.")
+    _require_active_worker(get_user(db, user_id))
     now = now_ms(request)
     if _overlaps(db, user_id, now, None):
         fail(409, "ACTIVE_SHIFT", "У сотрудника уже есть незавершённая или пересекающаяся смена.")
@@ -137,6 +141,8 @@ def _clock_action(action, shift_id, request, db, actor):
     require_own(actor, row.user_id)
     if row.ended_at is not None:
         fail(409, "SHIFT_FINISHED", "Эта смена уже завершена.")
+    if action != "finish":
+        _require_active_worker(get_user(db, row.user_id))
     current_break = db.scalar(select(Break).where(Break.shift_id == row.id, Break.ended_at.is_(None)))
     if action == "pause" and current_break is not None:
         fail(409, "ALREADY_PAUSED", "Перерыв уже начат.")
@@ -185,9 +191,11 @@ def create_shift(body: ShiftCreate, request: Request, db: Db, actor: CurrentActo
     require_permission(actor, "edit_own_shifts")
     user_id = body.userId or actor.user["id"]
     require_own(actor, user_id)
-    get_user(db, user_id)
+    user = get_user(db, user_id)
     now = now_ms(request)
     values = _validated_values(body.model_dump(), now)
+    if values["endedAt"] is None:
+        _require_active_worker(user)
     if _overlaps(db, user_id, values["startedAt"], values["endedAt"]):
         fail(409, "SHIFT_OVERLAP", "Смена пересекается с другой сменой этого сотрудника.")
     row = Shift(id=str(uuid4()), user_id=user_id, started_at=values["startedAt"],
@@ -212,6 +220,8 @@ def update_shift(shift_id: Identifier, body: ShiftUpdate, request: Request, db: 
     current = public_shift(db, row)
     now = now_ms(request)
     values = _validated_values({**current, **body.model_dump(exclude_unset=True)}, now)
+    if values["endedAt"] is None and row.ended_at is not None:
+        _require_active_worker(get_user(db, row.user_id))
     if _overlaps(db, row.user_id, values["startedAt"], values["endedAt"], row.id):
         fail(409, "SHIFT_CONFLICT", "Смена пересекается с другой сменой этого сотрудника.")
     row.started_at, row.ended_at, row.note = values["startedAt"], values["endedAt"], values["note"]

@@ -92,18 +92,26 @@ def shift_metrics(shift, now):
     return result
 
 
-def dashboard_context(db, user, now):
+def dashboard_day_starts(now):
     current = local_datetime(now)
     midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
     today = int(midnight.timestamp() * 1000)
     monday = today - current.weekday() * DAY
     month = int(midnight.replace(day=1).timestamp() * 1000)
-    lower = min(monday, month)
-    query = select(Shift).where(Shift.user_id == user.id).order_by(Shift.started_at.desc(), Shift.id.desc())
-    relevant = db.scalars(query.where(or_(Shift.started_at >= lower, Shift.ended_at >= lower, Shift.ended_at.is_(None)))).all()
-    recent = db.scalars(query.limit(3)).all()
-    rows = {row.id: row for row in relevant + recent}
-    shifts = [public_shift(db, row) for row in sorted(rows.values(), key=lambda row: (row.started_at, row.id), reverse=True)]
+    return today, monday, month
+
+
+def dashboard_shifts(db, user_id, since, recent_limit):
+    query = select(Shift).where(Shift.user_id == user_id).order_by(Shift.started_at.desc(), Shift.id.desc())
+    recent_ids = query.with_only_columns(Shift.id).limit(recent_limit)
+    # Period totals need every overlapping shift, even when recent history is capped.
+    rows = db.scalars(query.where(or_(Shift.ended_at >= since, Shift.ended_at.is_(None), Shift.id.in_(recent_ids))))
+    return [public_shift(db, row) for row in rows]
+
+
+def dashboard_context(db, user, now):
+    today, monday, month = dashboard_day_starts(now)
+    shifts = dashboard_shifts(db, user.id, min(monday, month), recent_limit=3)
     dashboard = {"user": public_user(db, user), "schedule": get_schedule(db, user.id), "shifts": shifts, "serverNow": now}
     totals = lambda start, end: {key: sum(interval(s, start, end, now)[key] for s in shifts) for key in ("workMs", "breakMs")}
     active = next((s for s in shifts if s["endedAt"] is None), None)
@@ -130,7 +138,8 @@ def dashboard_context(db, user, now):
     end = dashboard["schedule"]["endTime"].split(":")
     planned = ((int(end[0]) * 60 + int(end[1]) - int(start[0]) * 60 - int(start[1])) % 1440 - dashboard["schedule"]["breakMinutes"]) * 60000
     active_metrics = shift_metrics(active, now) if active else {"workMs": 0, "breakMs": 0, "status": "idle", "label": "Не начата"}
-    summary = {"today": totals(today, today + DAY), "week": totals(monday, now), "month": totals(month, now), "events": events[:5], "weekDays": week, "recent": shifts[:3], "active": active, "metrics": active_metrics, "plannedMs": planned, "progress": min(100, active_metrics["workMs"] / planned * 100) if planned > 0 else 0}
+    today_totals = totals(today, today + DAY)
+    summary = {"today": today_totals, "week": totals(monday, now), "month": totals(month, now), "events": events[:5], "weekDays": week, "recent": shifts[:3], "active": active, "metrics": active_metrics, "plannedMs": planned, "progress": min(100, today_totals["workMs"] / planned * 100) if planned > 0 else 0}
     return dashboard, summary
 
 

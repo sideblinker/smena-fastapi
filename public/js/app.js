@@ -123,7 +123,20 @@
   const zonedDate = value => new Date(numericTime(value) + 5 * HOUR);
   const dateKey = value => { const date = zonedDate(value); return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`; };
   const dateInput = value => { const date = zonedDate(value); return `${dateKey(value)}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`; };
-  const parseInput = value => value ? Date.parse(`${value}+05:00`) : null;
+  function fillShiftTime(input, original, suggested = null) {
+    const display = original ?? suggested;
+    input.value = display == null ? '' : dateInput(display);
+    input.dataset.originalTime = original == null ? '' : String(numericTime(original));
+  }
+  function readShiftTime(input) {
+    if (!input.value) return null;
+    const entered = Date.parse(`${input.value}+05:00`);
+    // The editor displays whole seconds. Keep the recorded milliseconds when
+    // the displayed second is unchanged, including the browser's HH:mm form.
+    const original = Number(input.dataset.originalTime);
+    if (input.dataset.originalTime && entered === Math.floor(original / 1000) * 1000) return original;
+    return entered;
+  }
   const dayStart = value => Date.parse(`${dateKey(value)}T00:00:00+05:00`);
   const dayFromKey = value => Date.parse(`${value}T00:00:00+05:00`);
   const weekStart = value => dayStart(value) - ((zonedDate(value).getUTCDay() + 6) % 7) * DAY;
@@ -315,14 +328,23 @@
     $('#timer').textContent = duration(metric.workMs);
     $('#shift-status').className = `status-badge ${active ? paused ? 'paused' : 'working' : 'idle'}`;
     $('#shift-status').innerHTML = `<span class="status-dot"></span><span>${active ? paused ? 'На перерыве' : 'В работе' : 'Не начата'}</span>`;
-    $('#timer-subtitle').textContent = !trackingAllowed ? 'Учёт смен недоступен. Обратитесь к администратору.' : active ? paused ? `Перерыв: ${duration(current - active.breaks.at(-1).startedAt)}` : `Начало в ${timeFormatter.format(active.startedAt)} · Перерывы: ${readable(metric.breakMs)}` : 'Готовы начать? Ваше время начинается здесь.';
+    const subtitle = $('#timer-subtitle');
+    if (!trackingAllowed) {
+      subtitle.textContent = active && isAdmin() ? 'Учёт отключён. Можно завершить смену или исправить время её окончания.' : 'Учёт смен недоступен. Обратитесь к администратору.';
+    } else if (paused) {
+      subtitle.textContent = `Перерыв: ${duration(current - active.breaks.at(-1).startedAt)}`;
+    } else {
+      subtitle.textContent = active ? `Начало в ${timeFormatter.format(active.startedAt)} · Перерывы: ${readable(metric.breakMs)}` : 'Готовы начать? Ваше время начинается здесь.';
+    }
     $('#start-button').hidden = !!active; $('#pause-button').hidden = !active || paused; $('#resume-button').hidden = !active || !paused;
-    ['start', 'pause', 'resume', 'finish'].forEach(action => { $(`#${action}-button`).disabled = mutationBusy || !connected || !trackingAllowed || (action !== 'start' && !active); });
-    const hours = plannedHours(), progress = hours > 0 ? Math.min(metric.workMs / (hours * HOUR) * 100, 100) : 0;
-    $('#progress-fill').style.width = `${progress}%`; $('#shift-progress').setAttribute('aria-valuenow', String(Math.round(progress)));
-    $('#progress-caption').textContent = `${(metric.workMs / HOUR).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} из ${hours.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} часов`;
-    $('#current-date').textContent = dateFormatter.format(current); $('#today-label').textContent = dateFormatter.format(current);
+    const controlsBusy = mutationBusy || !connected;
+    ['start', 'pause', 'resume'].forEach(action => { $(`#${action}-button`).disabled = controlsBusy || !trackingAllowed || (action !== 'start' && !active); });
+    $('#finish-button').disabled = controlsBusy || !active || !(trackingAllowed || isAdmin());
     const today = dayStart(current), todayWork = totalBetween(today, today + DAY, current);
+    const hours = plannedHours(), progress = hours > 0 ? Math.min(todayWork / (hours * HOUR) * 100, 100) : 0;
+    $('#progress-fill').style.width = `${progress}%`; $('#shift-progress').setAttribute('aria-valuenow', String(Math.round(progress)));
+    $('#progress-caption').textContent = `${(todayWork / HOUR).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} из ${hours.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} часов`;
+    $('#current-date').textContent = dateFormatter.format(current); $('#today-label').textContent = dateFormatter.format(current);
     $('#stat-today').innerHTML = statTime(todayWork); $('#stat-week').innerHTML = statTime(totalBetween(weekStart(current), current, current)); $('#stat-month').innerHTML = statTime(totalBetween(monthStart(current), current, current));
     $('#stat-breaks').innerHTML = `${Math.floor(dashboard.shifts.reduce((sum, shift) => sum + breakBetween(shift, today, today + DAY, current), 0) / MINUTE)} <span>мин</span>`;
     $('#stat-today-note').textContent = active ? paused ? 'Сейчас идёт перерыв' : 'Рабочее время идёт' : todayWork > 0 ? 'Время сохранено в истории' : 'Рабочий день ещё впереди';
@@ -811,7 +833,9 @@
   function addBreakRow(pause = {}) {
     breakSequence += 1;
     const row = document.createElement('div'); row.className = 'break-row';
-    row.innerHTML = `<div class="field"><label for="break-start-${breakSequence}">Начало перерыва</label><input type="datetime-local" id="break-start-${breakSequence}" data-break-start required step="1" value="${pause.startedAt != null ? dateInput(pause.startedAt) : ''}"></div><div class="field"><label for="break-end-${breakSequence}">Конец перерыва</label><input type="datetime-local" id="break-end-${breakSequence}" data-break-end step="1" value="${pause.endedAt != null ? dateInput(pause.endedAt) : ''}"></div><button type="button" class="close-button" data-action="remove-break" aria-label="Удалить перерыв">×</button>`;
+    row.innerHTML = `<div class="field"><label for="break-start-${breakSequence}">Начало перерыва</label><input type="datetime-local" id="break-start-${breakSequence}" data-break-start required step="1"></div><div class="field"><label for="break-end-${breakSequence}">Конец перерыва</label><input type="datetime-local" id="break-end-${breakSequence}" data-break-end step="1"></div><button type="button" class="close-button" data-action="remove-break" aria-label="Удалить перерыв">×</button>`;
+    fillShiftTime(row.querySelector('[data-break-start]'), pause.startedAt);
+    fillShiftTime(row.querySelector('[data-break-end]'), pause.endedAt);
     $('#shift-breaks').append(row);
   }
   function openShift(id = null) {
@@ -820,7 +844,8 @@
     if (shift ? !canEditShift(shift) : !(can('edit_own_shifts') && (isAdmin() || String(selectedUserId) === String(session.user.id)))) { notify('Нет доступа к изменению этой смены.', true); return; }
     editingShift = shift ? { ...shift } : null; $('#shift-form').reset();
     $('#shift-title').textContent = shift ? 'Изменить смену' : 'Добавить смену';
-    $('#shift-start').value = dateInput(shift?.startedAt ?? now()); $('#shift-end').value = shift?.endedAt != null ? dateInput(shift.endedAt) : '';
+    fillShiftTime($('#shift-start'), shift?.startedAt, now());
+    fillShiftTime($('#shift-end'), shift?.endedAt);
     $('#shift-note').value = shift?.note || ''; $('#shift-breaks').replaceChildren(); (shift?.breaks || []).forEach(addBreakRow);
     $('#shift-reason').value = ''; $('#shift-reason').required = !!shift; $('#shift-reason-field').hidden = !shift;
     if ($('#calendar-day-dialog').open) $('#calendar-day-dialog').close();
@@ -1002,7 +1027,15 @@
   });
   $('#shift-form').addEventListener('submit', async event => {
     event.preventDefault(); $('#shift-error').textContent = '';
-    const payload = { startedAt: parseInput($('#shift-start').value), endedAt: parseInput($('#shift-end').value), breaks: $$('#shift-breaks .break-row').map(row => ({ startedAt: parseInput(row.querySelector('[data-break-start]').value), endedAt: parseInput(row.querySelector('[data-break-end]').value) })), note: $('#shift-note').value.trim() };
+    const payload = {
+      startedAt: readShiftTime($('#shift-start')),
+      endedAt: readShiftTime($('#shift-end')),
+      breaks: $$('#shift-breaks .break-row').map(row => ({
+        startedAt: readShiftTime(row.querySelector('[data-break-start]')),
+        endedAt: readShiftTime(row.querySelector('[data-break-end]'))
+      })),
+      note: $('#shift-note').value.trim()
+    };
     const submittedShift = editingShift;
     if (submittedShift) { payload.version = submittedShift.version; payload.reason = $('#shift-reason').value.trim(); } else payload.userId = selectedUserId;
     try {
